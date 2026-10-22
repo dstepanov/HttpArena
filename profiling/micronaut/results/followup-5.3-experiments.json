@@ -1,0 +1,130 @@
+[
+  {
+    "change": "unwrapped JSON model + prepared-statement cache",
+    "workload": "json",
+    "before_median": 129483.01,
+    "after_median": 113804.79,
+    "delta_percent": -12.108322165201447,
+    "before_runs": [
+      144214.88,
+      129483.01,
+      85487.49
+    ],
+    "after_runs": [
+      107104.85,
+      113804.79,
+      115207.42
+    ]
+  },
+  {
+    "change": "unwrapped JSON model + prepared-statement cache",
+    "workload": "async-db",
+    "before_median": 23750.35,
+    "after_median": 38421.41,
+    "delta_percent": 61.771973886700636,
+    "before_runs": [
+      25230.33,
+      23750.35,
+      21198.94
+    ],
+    "after_runs": [
+      38421.41,
+      38305.83,
+      40240.5
+    ]
+  },
+  {
+    "change": "unwrapped JSON model + prepared-statement cache",
+    "workload": "fortunes",
+    "before_median": 18256.76,
+    "after_median": 19299.35,
+    "delta_percent": 5.710706609496974,
+    "before_runs": [
+      18256.76,
+      17586.05,
+      18482.12
+    ],
+    "after_runs": [
+      19299.35,
+      19370.41,
+      16326.43
+    ]
+  },
+  {
+    "change": "pooled allocator only",
+    "workload": "pipeline",
+    "before_median": 1083105.0666666667,
+    "after_median": 1727650.3664223852,
+    "delta_percent": 59.50902821822752,
+    "before_runs": [
+      1083105.0666666667,
+      1094502.4,
+      1003372.6848767488
+    ],
+    "after_runs": [
+      1882739.2,
+      1610318.4543637575,
+      1727650.3664223852
+    ]
+  },
+  {
+    "change": "pooled allocator only",
+    "workload": "baseline-get",
+    "before_median": 439399.615,
+    "after_median": 442966.38,
+    "delta_percent": 0.8117360321310274,
+    "before_runs": [
+      433513.64,
+      445285.59
+    ],
+    "after_runs": [
+      421046.88,
+      464885.88
+    ]
+  },
+  {
+    "change": "pooled allocator only",
+    "workload": "json",
+    "before_median": 137728.33500000002,
+    "after_median": 153232.78000000003,
+    "delta_percent": 11.257265979436992,
+    "before_runs": [
+      135743.23,
+      139713.44
+    ],
+    "after_runs": [
+      148197.89,
+      158267.67
+    ]
+  },
+  {
+    "change": "pooled allocator only",
+    "workload": "echo",
+    "before_median": 245555.525,
+    "after_median": 297469.38,
+    "delta_percent": 21.141391544743303,
+    "before_runs": [
+      234851.24,
+      256259.81
+    ],
+    "after_runs": [
+      280087.82,
+      314850.94
+    ]
+  },
+  {
+    "change": "pooled allocator only",
+    "workload": "h2c",
+    "before_median": 432789.13,
+    "after_median": 533672.3999999999,
+    "delta_percent": 23.31002860446145,
+    "before_runs": [
+      433640.53,
+      431937.73
+    ],
+    "after_runs": [
+      492411.73,
+      574933.07
+    ]
+  }
+]

@@ -17,8 +17,8 @@ JAR=$JARS/$e/target/micronaut-$e-httparena.jar
 for tool in java taskset curl "$ASPROF" "$1"; do
   command -v "$tool" >/dev/null || { echo "missing executable: $tool" >&2; exit 1; }
 done
-FLAGS="-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints --enable-native-access=ALL-UNNAMED"
-[ "$e" = tuned ] && FLAGS="$FLAGS -XX:+UseParallelGC -Dio.netty.buffer.checkBounds=false -Dio.netty.buffer.checkAccessible=false -Dio.netty.leakDetection.level=disabled"
+FLAGS="-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints --enable-native-access=ALL-UNNAMED -Dio.netty.native.deleteLibAfterLoading=false"
+[ "$e" = tuned ] && FLAGS="$FLAGS -XX:+UseParallelGC -Dio.netty.allocator.type=pooled -Dio.netty.buffer.checkBounds=false -Dio.netty.buffer.checkAccessible=false -Dio.netty.leakDetection.level=disabled"
 mkdir -p "$OUT"
 P= W= A=
 cleanup() {

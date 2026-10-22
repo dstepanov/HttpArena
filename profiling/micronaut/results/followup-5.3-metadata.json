@@ -1,0 +1,71 @@
+{
+  "core_revision": "01f1ad23348b9a62a15b1372b712e4faae0bddfc",
+  "app_revision": "c311e88470064f8e7255d821a61d4e30e5a08854",
+  "jdk": "Temurin 27+35 Linux aarch64",
+  "profiler": "async-profiler 4.6",
+  "load_generator_gcannon": "11c802b2bdfe9af2fac4ac2571ae2de4c530cc62",
+  "h2load": "nghttp2 v1.69.0, HTTP/3 with ngtcp2/openssl",
+  "vm": "OrbStack Linux 7.0.14 aarch64 on Apple Silicon; 16 vCPUs; ~16 GiB",
+  "placement": {
+    "server": "0-1",
+    "client": "2-3",
+    "postgresql": "6-7"
+  },
+  "heap": "512 MiB fixed",
+  "request_connections": "128 HTTP/1,64 echo,32x16 HTTP/2 and HTTP/3,64x1 HTTP/1 TLS",
+  "warmup_seconds": {
+    "first": 25,
+    "other": 12
+  },
+  "measurement_seconds": 15,
+  "profile": {
+    "event": "cpu (perf), including resolved kernel stacks",
+    "cpu_interval": "1ms",
+    "allocation_interval": "512 KiB",
+    "wall_interval": "20ms",
+    "lock_threshold": "10ms",
+    "duration_seconds": 10,
+    "jstackdepth": 512
+  },
+  "jars": {
+    "tuned": {
+      "sha256": "f21dc14c925ecf73e68afaa39e814a0814f15862bbd61c0a7bd10a5a329eee86",
+      "accepted_sha256": "259843a315ef09001f0ec631644f30346e6da04aa47c28eeace9ca1b4d92cbe4"
+    },
+    "production": {
+      "sha256": "5e4011a5e2844f2e16804e6da2bf065bec04ebe436e0a88d305a692ef9033320",
+      "accepted_sha256": "232cdf037a9b15b4d715afb27f700ed7d8eb49370936eaff1e2347f59c4480e6"
+    }
+  },
+  "application_fix_commit": "56fa29320f4c75f23e905c6b35aed17a5592f3f7",
+  "equivalent_baseline_app_commit": "1c37470dfe50861bf7699b2223280f5ebe872fcb",
+  "native_followups": {
+    "retain_netty_native_files": true,
+    "cstack": "dwarf"
+  },
+  "accepted_configuration": {
+    "both": "Vert.x prepared-statement cache; original flat JSON model",
+    "tuned": "pooled allocator, ParallelGC, io_uring",
+    "production": "adaptive allocator, G1, NIO"
+  },
+  "verification": [
+    {
+      "entry": "tuned",
+      "http_json_gzip_db_freshness_unicode_echo_static_fortunes": true,
+      "h2c_h2tls_h3_requests_each": 10000,
+      "h3_exact_body": true
+    },
+    {
+      "entry": "production",
+      "http_json_gzip_db_freshness_unicode_echo_static_fortunes": true,
+      "h2c_h2tls_h3_requests_each": 10000,
+      "h3_exact_body": true
+    }
+  ],
+  "ci": {
+    "run": "https://github.com/MDA2AV/HttpArena/actions/runs/39768085667",
+    "head": "56fa29320f4c75f23e905c6b35aed17a5592f3f7",
+    "production": "success",
+    "tuned": "success"
+  }
+}

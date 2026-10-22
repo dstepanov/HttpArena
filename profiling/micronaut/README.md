@@ -2,19 +2,21 @@
 
 Profiles of `micronaut-tuned` and `micronaut-production` against a Micronaut 5.3.x snapshot. [REPORT.md](REPORT.md) and `results/load-*.txt` retain the original captures, including their errors and unmatched workloads. The corrected drivers produce new measurements; they do not recreate every historical command.
 
+The [current 5.3.x follow-up](REPORT-5.3.md) contains the complete 32-workload baseline, native TLS/QUIC call paths and controlled statement-cache/allocator experiments. Its retained changes are on application commit `56fa29320f4c75f23e905c6b35aed17a5592f3f7`.
+
 ## Application source and build
 
-The benchmark applications come from [HttpArena PR #1612](https://github.com/MDA2AV/HttpArena/pull/1612), not the `frameworks/` directories on this profiling branch. The original capture used the application before the rendering/JSON follow-up. For the corrected applications, pin commit `c311e88470064f8e7255d821a61d4e30e5a08854`:
+The benchmark applications come from [HttpArena PR #1612](https://github.com/MDA2AV/HttpArena/pull/1612), not the `frameworks/` directories on this profiling branch. The original capture used the application before the rendering/JSON follow-up. The new 32-workload baseline uses application commit `c311e88470064f8e7255d821a61d4e30e5a08854` (equivalent framework trees at `1c37470dfe50861bf7699b2223280f5ebe872fcb`). For the retained follow-up changes, pin `56fa29320f4c75f23e905c6b35aed17a5592f3f7`:
 
 ```sh
 git clone https://github.com/dstepanov/HttpArena.git httparena-apps
-git -C httparena-apps checkout c311e88470064f8e7255d821a61d4e30e5a08854
+git -C httparena-apps checkout 56fa29320f4c75f23e905c6b35aed17a5592f3f7
 mkdir -p /tmp/micronaut-profile-jars
 cp -R httparena-apps/frameworks/micronaut-tuned /tmp/micronaut-profile-jars/tuned
 cp -R httparena-apps/frameworks/micronaut-production /tmp/micronaut-profile-jars/production
 ```
 
-The committed application POMs target platform 5.2.3. To profile the historical core snapshot, publish the clean micronaut-core commit `cc5ad2be35` to Maven Local with JDK 25 (`./gradlew -I /absolute/path/to/profiling/micronaut/nojavadoc.gradle publishToMavenLocal`), then add this dependency-management import to each **copied** application POM:
+The committed application POMs target platform 5.2.3. The historical report used core `cc5ad2be35`. For the current follow-up, publish clean micronaut-core commit `01f1ad23348b9a62a15b1372b712e4faae0bddfc` to Maven Local with JDK 25 (`./gradlew -I /absolute/path/to/profiling/micronaut/nojavadoc.gradle publishToMavenLocal`), then set `<micronaut.core.version>5.3.0-SNAPSHOT</micronaut.core.version>` in each **copied** application POM. The platform parent manages core modules directly, so a BOM import alone does not override them. Also add this dependency-management import:
 
 ```xml
 <dependencyManagement>
@@ -30,7 +32,7 @@ The committed application POMs target platform 5.2.3. To profile the historical 
 </dependencyManagement>
 ```
 
-Build both copies with JDK 27 using `mvn clean verify`. Record the exact JDK build and resolved dependency versions with any new results. Dataset loading, PostgreSQL JSON tags and HTTP JSON responses use Micronaut Serialization; both applications exclude Jackson Databind. Jackson Core is still the streaming backend.
+Build both copies with JDK 27 using `mvn clean verify dependency:list`. Check the resolved list: every `io.micronaut` core module must be `5.3.0-SNAPSHOT` before accepting a profile. Record the exact JDK build and resolved dependency versions with any new results. Dataset loading, PostgreSQL JSON tags and HTTP JSON responses use Micronaut Serialization; both applications exclude Jackson Databind. Jackson Core is still the streaming backend.
 
 ## Running profiles
 
@@ -45,9 +47,9 @@ profiling/micronaut/all.sh production
 python3 -I profiling/micronaut/analyze.py "$OUT/ap-tuned-json.collapsed"
 ```
 
-Each workload warms up for its full 22-second command, then runs again for measurement. The profiler records 10 seconds starting three seconds into that second run. Server, load and profiler failures stop the driver; its processes are cleaned up on failure or interruption. Use a fresh `OUT` directory for each repetition and repeat comparisons at least three times.
+The driver follows the retained tuned entry settings, including pooled buffers. The historical/current baseline captures in the reports used adaptive buffers; compare only matched settings. Each workload warms up for its full 22-second command, then runs again for measurement. The profiler records 10 seconds starting three seconds into that second run. Server, load and profiler failures stop the driver; its processes are cleaned up on failure or interruption. Use a fresh `OUT` directory for each repetition and repeat comparisons at least three times.
 
-CPU sampling defaults to `cpu`. Where perf permissions prevent this, set `ASPROF_EVENT=ctimer` and record that limitation; it does not resolve kernel stacks. The historical `itimer` profiles cannot establish a syscall floor. Inclusive percentages overlap, and the analyzer's leaf-most-framework view includes work performed by that frame's callees.
+CPU sampling defaults to `cpu`. Where perf permissions prevent this, set `ASPROF_EVENT=ctimer` and record that limitation; it does not resolve kernel stacks. The historical `itimer` profiles cannot establish a syscall floor. The driver keeps Netty’s extracted native libraries on disk (`io.netty.native.deleteLibAfterLoading=false`) so async-profiler can read their full ELF symbol tables, including QUIC internals. Inclusive percentages overlap, and the analyzer's leaf-most-framework view includes work performed by that frame's callees.
 
 Both entries now use the same five async-db row limits. Plain and Brotli static runs serve the same CSS asset; the HTTP/2 runs use the same stream concurrency, and HTTP/1 TLS uses their `/baseline2` endpoint. These changes require fresh results before protocol or compression comparisons.
 
