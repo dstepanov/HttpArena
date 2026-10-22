@@ -1,0 +1,47 @@
+{
+  "core": "6273f6b9bedfd18e6307ae466a1919894210053b",
+  "baseline": "01f1ad23348b9a62a15b1372b712e4faae0bddfc",
+  "root_command": "./gradlew --no-daemon --max-workers=2 --continue check docs japiCmp",
+  "root_result": "FAILED",
+  "duration": "26m32s",
+  "root_xml": {
+    "cases": 32888,
+    "passed": 32668,
+    "failures": 3,
+    "skipped": 217
+  },
+  "docs": "PASS with existing tolerated diagnostics",
+  "japiCmp": {
+    "passed": 46,
+    "configured_skips": 5
+  },
+  "failed_root_tasks": {
+    ":micronaut-http-client:test": "AsyncStreamingDecompressedLimitTest exact failure reproduced in pristine full suite; both isolated runs pass",
+    ":micronaut-inject-java:test": "Two ProcessorOptionsSystemPropertiesSpec assertions fail in aggregate but both pass on pristine/current isolated runs. Unchanged source; aggregate state/order cause unresolved, not proven baseline-reproduced.",
+    ":micronaut-reflection:compileTestGroovy": "Java heap exhaustion; validation-only 2g compiler retry succeeds",
+    ":micronaut-runtime:compileTestGroovy": "Java heap exhaustion; validation-only 2g compiler retry succeeds"
+  },
+  "retries": {
+    "runtime_check": {
+      "result": "PASS",
+      "cases": 112,
+      "skipped": 3
+    },
+    "reflection_check": {
+      "result": "FAILED",
+      "xml_cases": 507,
+      "xml_case_failures": 0,
+      "xml_skipped": 3,
+      "failure": "AsTypeFuzzSpec feature-container PendingFeatureSuccessfulError: @PendingFeature passes unexpectedly",
+      "pristine_full_check": "Identical feature-container failure reproduced",
+      "reporting_boundary": "XML omits this container failure; HTML and binary results retained"
+    },
+    "processor_options_isolated": {
+      "pristine_passed": 2,
+      "current_passed": 2
+    }
+  },
+  "coverage_boundary": "Normal root configuration excludes Python CI tests unless -Ppython-ci is supplied",
+  "production_settings_changed_for_validation": false,
+  "broad_core_all_green": false
+}
