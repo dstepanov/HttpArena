@@ -1,5 +1,7 @@
 # Micronaut 5.3.x on HttpArena: profile report
 
+This is the historical capture before the rendering and JSON-decoding follow-up. Load outputs and the appendix are preserved. Percentages below are sample shares, not measured speedups; inclusive frames overlap.
+
 ## 1. Setup
 
 | Item | Value |
@@ -9,10 +11,10 @@
 | Runtime | JDK 27, tuned entry on io_uring, production entry on defaults |
 | Server CPUs | 0-1 |
 | Load CPUs | 2-3 (Postgres, for the two database paths, on CPU 3) |
-| Profiler | async-profiler 4.4, `itimer`, 1 ms, 10 s window after about 10 s warmup |
+| Profiler | async-profiler 4.4, `itimer`, requested 1 ms, 10 s window after a full 22 s warmup run |
 | Runs | one run per path, not repeated |
 
-Caveats: absolute numbers are low because the box is small and shared; relative shapes are what matter. The two database paths are limited by Postgres sharing a CPU. HTTP/3 was only checked functionally.
+Caveats: these are single runs on a small shared machine. Postgres shares a CPU with the load generator, but database CPU/query metrics were not captured to establish the ceiling. `itimer` has timer-resolution and thread-selection biases and does not resolve kernel stacks. HTTP/3 was only checked functionally. No matched 5.2 capture is included.
 
 ## 2. Throughput (req/s)
 
@@ -35,7 +37,9 @@ Caveats: absolute numbers are low because the box is small and shared; relative 
 | async-db | 3.2k | 3.4k |
 | fortunes | 4.5k | 3.9k |
 
-The tuned-over-production gap is 25-45% on the CPU-bound paths and disappears on the database paths. Part of it is io_uring and part is the tuned JVM and server flags.
+These are whole-entry comparisons: transport, JVM flags and application rendering differ. The observed gains range from 14% for static CSS to 44% for echo. The async-db results are not comparable: tuned rotates row limits 5, 10, 20, 35 and 50; production rotates only 5 and 10. Each request performs one SQL query. The current driver uses all five limits for both entries; it must be rerun before updating this table.
+
+The captures are not error-free. JSON has 585 tuned and 303 production read errors; fortunes has 70 and 63; tuned gzip JSON has 35; tuned async-db has 5. No HTTP 5xx responses are recorded in these saved load outputs. The original HTTP/2 TLS server log also has 1,312 closed-channel warnings clustered around the ends of the warmup and measurement runs; teardown is a plausible explanation, not a verified cause.
 
 ## 3. Findings by path
 
@@ -44,28 +48,31 @@ Frame shares are percentages of samples. "Syscall" is the kernel boundary (read/
 ### Baseline, pipelined, async
 - Syscall frame is about 65% of baseline samples. The rest is spread thin: `PipeliningServerHandler.channelRead` is about 22% inclusive, with `write0`, route matching (`UriRouteSet.findMethodMatches`), parameter decoding and `NettyHttpHeaders.validateHeader` each a few percent.
 - Under pipelining `validateHeader` rises to about 4.5%. The idea of skipping it for the cached Date header was measured before at about 0.1% of a request and I do not recommend publishing it.
-- Nothing new compared with the 5.2 profile. The framework is close to the syscall floor on these paths.
+- The 65% `syscall` frame is under `ioUringEnter`; this capture cannot split kernel work from sampling bias or establish an irreducible floor. Use perf-based CPU sampling plus a wall profile before drawing that conclusion.
+- Throughput is not a latency result: tuned baseline GET reports 14.42 ms average and 774.75 ms maximum, versus production's 2.53 ms and 58.90 ms. Repeat with percentile measurements.
 
 ### JSON
-- About 40% is the serializer: `SerializedString.appendQuotedUTF8` 6.8%, `UTF8JsonGenerator.writeName` 6.8%, `_writeStringSegment` 5.3%, plus `JacksonEncoder.serializableKey`. Field names are quoted and written again for every object.
-- Candidate: pre-encode and reuse field-name tokens in the Serde Jackson encoder (Serde project, not core).
+- `JacksonJsonMapper.writeValue` accounts for about 49.8% inclusive in tuned and 38.4% in production. This is Micronaut Serialization using Jackson Core, not Jackson Databind for HTTP response binding.
+- `SerializedString.appendQuotedUTF8` (6.8% self in tuned) copies cached quoted UTF-8 bytes. Its presence does not demonstrate repeated quoting. Serde already reuses serialized field-name keys; investigate key dispatch and generator work before proposing another cache.
+- The original PostgreSQL path separately decoded JSONB tags through Vert.x's JSON codec. The follow-up reads the tags as text and decodes them with Micronaut Serialization, and excludes both Jackson Databind namespaces from the application dependencies.
 
 ### JSON with gzip
-- About 58% of samples are in `Compressor$Session.push`, nearly all of it zlib `deflate_slow` and `longest_match`. That is the compression cost itself; there is no meaningful framework overhead to remove.
+- About 58% of tuned samples are in `Compressor$Session.push`, dominated by zlib `deflate_slow` and `longest_match`. Compression is the main lead here; changing compression settings requires measuring output size and correctness alongside throughput. This does not prove that all other overhead is negligible.
 
 ### Static files
-- The weakest path. Plain static gets 25k against 142k for baseline.
-- Each request hops to a blocking executor (`InstrumentedExecutor.execute` 8.6%, `pthread_cond_signal` 7.7%, futex waits and `ForkJoinPool.deactivate`), so about 39% of samples sit under `PropagatedContextImpl.propagate`.
+- Plain static gets 25k against 142k for baseline, but sends about 8.4 KB per response against 103 bytes for baseline. The throughput difference alone does not isolate file-handling overhead.
+- Executor submission accounts for about 8.2% inclusive in tuned, with `pthread_cond_signal` at 7.7% self. `PropagatedContextImpl.propagate` is an ancestor covering about 39%, not 39% context-propagation overhead. These shares must not be added together.
 - It repeats `stat`, `open`, `statx` and `access` syscalls per request (each 2-5%) and reads through an `InputStream` (`SystemFileBodyWriter.write`, about 19% inclusive).
-- Precompressed `.br` is about half as fast again, because the twin lookup adds more filesystem calls.
-- Candidates: read small files inline on the event loop (branch `denis/static-small-files`, not pushed) and cache per-file metadata and the twin lookup in the entry's `StaticController`.
+- The saved Brotli test serves `app.js` at about 47.6 KB per response, roughly 5.6 times the CSS response size. Its lower request rate cannot be attributed to twin lookup. The current driver compares the same CSS asset with and without Brotli.
+- Investigate repeated file checks and scheduling in the framework while preserving Range/conditional responses and immediate file/variant freshness. HttpArena disallows entry-owned file caches, and its validator replaces files and compressed twins. Moving ordinary disk reads onto the event loop requires cold-cache and latency validation; an unpublished branch is not evidence of a safe gain.
 
 ### Echo POST (8gbit profile)
-- `PlatformDependent.allocateUninitializedArray` 5.5% and `NettyByteBuffer.toByteArray` about 8.6% are two body copies (buffer to array, array back to buffer). The earlier C2 fix already removed the streaming aggregation.
-- Candidate: avoid the extra copy for byte[] bodies. Not investigated further.
+- Request conversion through `NettyByteBuffer.toByteArray` accounts for 8.6% inclusive in tuned. The 5.5% allocation self share is inside this request-side cost, not a separate outbound copy.
+- Outbound `ByteArrayBodyHandler.writePiece` accounts for about 2.1% inclusive. At the profiled core commit it copies deliberately because a publisher may reuse an emitted array. Any optimization must retain that ownership guarantee.
 
 ### HTTP/2 (TLS and cleartext)
 - h2 over TLS: 216k, h2c: 146k. Time sits in `Http2ServerHandler` (`channelRead`, `channelReadComplete`, `writeHeaders` 9-13%, `toHttp2Headers` 4-6%), Netty's HPACK decoder, promise notification and `DefaultHeaders.get`.
+- The saved TLS run uses 32 streams per connection and cleartext uses 100. HTTP/1 TLS also serves a different endpoint. These are not controlled protocol comparisons. The current driver uses 32 streams for both HTTP/2 runs and the same `/baseline2` endpoint for HTTP/1 TLS.
 - No obvious Micronaut-specific waste. Header conversion is the largest framework-owned item.
 
 ### WebSocket echo
@@ -74,11 +81,11 @@ Frame shares are percentages of samples. "Syscall" is the kernel boundary (read/
 
 ### Fortunes
 - Tuned: `FortunesController.escape` is about 30% inclusive (7.9% self), because it appends one character at a time, plus `String.encodeUTF8_UTF16` 8.3% and `AbstractStringBuilder.append` 7.3%. Fix: append runs of safe characters in bulk and write bytes directly.
-- Production: 58% inside the handler lambda. `CharSequenceBodyWriter` copying the rendered `String` into a buffer is 21%; Rocker's own render is about 18% (`DefaultHtmlStringify.escape` 4%). Fix: return `byte[]` from the template or use Rocker's byte-output form.
-- The first fortunes run produced 993 errors only because my test Postgres had 100 connections against a pool of 256. With `max_connections=256`, as the harness sets it, there were none.
+- Production: 58% inside the handler lambda. `CharSequenceBodyWriter.writePiece` is 21.4% inclusive and includes UTF-8 encoding; Rocker's render is about 18% (`DefaultHtmlStringify.escape` 4% self). Direct Rocker byte output can avoid the intermediate String, but not all encoding/copying work. A 21% speedup is not established.
+- An earlier run with Postgres capped at 100 connections produced HTTP errors. The saved runs with the higher cap have no HTTP 5xx responses, but still contain 70 tuned and 63 production read errors.
 
 ### async-db
-- Dominated by Postgres and the driver's network reads and writes. The entry's own code is about 11%. Postgres on one shared CPU is the ceiling, so this says little about the entry.
+- The sampled JVM stacks are heavy in database-driver reads and writes. Postgres is a plausible constraint on the shared CPU, but its process was not profiled. Repeat the same row-limit mix with separate database/load resources and collect database metrics before identifying the ceiling.
 
 ### HTTP/3
 - `/baseline2` returned 200 with the right sum and `/static/reset.css` returned 200 with the CSS over QUIC. No load test, because `h2load-h3` could not be built here.
@@ -87,23 +94,37 @@ Frame shares are percentages of samples. "Syscall" is the kernel boundary (read/
 
 | # | Action | Where | Expected effect | Status |
 |---|---|---|---|---|
-| 1 | Bulk escaping in the tuned fortunes page | entry | large on fortunes | not done |
-| 2 | Byte output for the production fortunes template | entry | removes a 21% copy | not done |
-| 3 | Small static files read inline | core, `denis/static-small-files` | largest gain available on static | branch ready, not pushed |
-| 4 | Cache static file metadata and twin lookup | entry | fewer syscalls per static request | not done |
-| 5 | WebSocket per-message overhead | core, `denis/ws-message-overhead` | small | branch ready, not pushed |
-| 6 | Pre-encoded JSON field names | Serde | up to a few percent on json | not investigated |
-| 7 | Skip header validation for the Date header | core | about 0.1% | not recommended |
+| 1 | Bulk escaping in the tuned fortunes page | entry | reduce per-character builder calls | implemented in the follow-up; measure independently |
+| 2 | Direct Rocker byte output | entry | avoid the intermediate String | implemented in the follow-up; measure independently |
+| 3 | Micronaut Serialization for PostgreSQL JSON tags | entry | use one application JSON binding stack | implemented in the follow-up; correctness required |
+| 4 | File checks and scheduling with freshness preserved | core | possible static-file improvement | requires a measured design |
+| 5 | WebSocket per-message binding overhead | core | possible small improvement | not evaluated here |
+| 6 | Matched database, static and protocol workloads | profiling | make comparisons interpretable | driver corrected; historical results retained |
 
 ## 5. Files
 
 In this directory: `run.sh` and `all.sh` (the drivers), `analyze.py` (stack summary), `load/echo10k.lua` (echo body), `H3Client.java` (HTTP/3 check), `nojavadoc.gradle` (init script used to publish the core snapshot) and `results/load-*.txt` (the load generator output of every run). The raw `.collapsed` stacks were too large to commit; rerun `all.sh` to regenerate them.
 
+### Follow-up validation and isolated rendering measurements
+
+The corrected applications are pinned to `c311e88470064f8e7255d821a61d4e30e5a08854` in [PR #1612](https://github.com/MDA2AV/HttpArena/pull/1612). Both pass `mvn clean verify` on JDK 27, including JSON round trips without either Jackson Databind namespace and HTML/UTF-8 equivalence checks. Before/after HTTP checks against a fresh PostgreSQL 18.6 instance cover row-limit clamping, empty ranges, Unicode/escaped JSON tags, dataset totals, binary echo, fortunes escaping/row counts and immediate static-file replacement. Real QUIC requests pass on both corrected entries; the client rejects a wrong body, HTTP 404 and an unavailable server.
+
+[Linux CI](https://github.com/MDA2AV/HttpArena/actions/runs/39757679010) also passes for both entries: 111 validator checks passed, none failed and one was skipped per entry. The skipped check is HTTP/3 because the `h2load-h3` image is absent. The Docker builds now run the new unit tests instead of skipping them.
+
+The applications used their committed platform 5.2.3 for these follow-up checks, not the historical 5.3 snapshot. The local rendering comparison uses the 200 seeded messages plus the runtime row, three JMH forks and 15 measured iterations per method. It ran on macOS 26.7.1 arm64, OpenJDK 27-ea+25, G1, a 512 MB heap, one benchmark thread and `ActiveProcessorCount=2`; CPUs were not pinned.
+
+| Isolated operation | Before, us/op | After, us/op | Less time | Allocation before / after |
+|---|---:|---:|---:|---:|
+| Escape all messages into a builder | 39.28 ± 1.83 | 25.74 ± 0.72 | 34.5% | 98,360 / 98,360 B/op |
+| Rocker UTF-8 output | 67.35 ± 1.43 | 41.85 ± 0.71 | 37.9% | 413,928 / 191,224 B/op |
+
+Errors are JMH's 99.9% confidence intervals. The Rocker comparison models the old String-to-UTF-8 round trip with `String.getBytes`, not Netty's exact response writer. These results support the local rendering changes; they do not establish an HTTP throughput or latency gain on Linux. The escaping benchmark retains copies of the original and changed routines for this historical comparison. [Sources and commands](benchmarks/README.md), [raw JMH results](results/fortunes-followup-jmh.json).
+
 ## 6. Appendix: raw numbers per path
 
-Each section has the load generator output, then the analyzer output for the collapsed stacks (`an.py`): top self frames, top inclusive Micronaut, entry and Netty-codec frames, and the leaf-most framework frame.
+Each section has the load generator output, then the historical analyzer output for the collapsed stacks: top self frames, top inclusive Micronaut, entry and Netty-codec frames, and the leaf-most framework frame. The old label "self attributed" includes library work below that framework frame; it is not exclusive CPU time.
 
-Commands used are in `all.sh` (tuned) and `prod.sh` (production).
+The appendix describes the original runs. The archived production driver used only two async-db templates. The corrected `all.sh` now covers both entries and deliberately changes the unmatched static and protocol workloads; it will not reproduce those historical comparisons verbatim. See [README.md](README.md) for the pinned application source and current commands.
 
 ### production-async-db
 

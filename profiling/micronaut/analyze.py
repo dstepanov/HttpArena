@@ -1,4 +1,4 @@
-import sys,collections,re
+import sys,collections
 f=sys.argv[1]; tot=0; selfc=collections.Counter(); incl=collections.Counter(); fw=collections.Counter()
 for line in open(f):
     st,_,n=line.rpartition(' '); n=int(n); tot+=n
@@ -13,6 +13,6 @@ for line in open(f):
 print('total',tot)
 print('-- top self'); [print(f'{100*c/tot:5.1f}% {k}') for k,c in selfc.most_common(8)]
 print('-- top inclusive micronaut/entry/netty'); 
-for k,c in [(k,c) for k,c in incl.most_common(400) if k.startswith(('io/micronaut','httparena','io/netty/handler/codec','views/'))][:10]: print(f'{100*c/tot:5.1f}% {k}')
-print('-- leaf-most framework frame (self attributed)')
+for k,c in [(k,c) for k,c in incl.most_common() if k.startswith(('io/micronaut','httparena','io/netty/handler/codec','views/'))][:10]: print(f'{100*c/tot:5.1f}% {k}')
+print('-- leaf-most framework frame (including callees)')
 for k,c in fw.most_common(8): print(f'{100*c/tot:5.1f}% {k}')
