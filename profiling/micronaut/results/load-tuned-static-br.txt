@@ -1,0 +1,8 @@
+Running 22s test @ http://localhost:8080/static/app.js
+  2 threads and 256 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    20.59ms    7.53ms  85.10ms   72.20%
+    Req/Sec     6.25k     0.99k    9.39k    69.09%
+  273861 requests in 22.07s, 12.13GB read
+Requests/sec:  12410.39
+Transfer/sec:    562.96MB

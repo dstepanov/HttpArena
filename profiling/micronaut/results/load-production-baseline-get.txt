@@ -1,0 +1,8 @@
+Running 22s test @ http://localhost:8080/baseline11?a=13&b=42
+  2 threads and 256 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.53ms    1.82ms  58.90ms   94.07%
+    Req/Sec    53.07k    12.81k   82.53k    73.41%
+  2322181 requests in 22.07s, 228.10MB read
+Requests/sec: 105232.25
+Transfer/sec:     10.34MB

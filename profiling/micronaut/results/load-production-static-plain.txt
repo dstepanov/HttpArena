@@ -1,0 +1,8 @@
+Running 22s test @ http://localhost:8080/static/reset.css
+  2 threads and 256 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    11.84ms    4.29ms  67.43ms   77.64%
+    Req/Sec    10.93k     1.76k   18.18k    69.25%
+  477810 requests in 22.08s, 3.75GB read
+Requests/sec:  21635.46
+Transfer/sec:    174.10MB
