@@ -1,0 +1,199 @@
+From e1005782207487e2a9a2827603e104c21634a50b Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 13:34:38 +0200
+Subject: [PATCH] Fix provided-buffer ring replenishment corrupting HTTP
+ responses
+
+---
+ Makefile                 |  8 +++++-
+ include/worker.h         |  1 -
+ src/worker.c             |  5 ++--
+ tests/test_buffer_ring.c | 42 ++++++++++++++++++++++++++++++
+ tests/test_http_parser.c | 55 ++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 107 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_buffer_ring.c
+
+diff --git a/Makefile b/Makefile
+index 10930a2..7e0a0d0 100644
+--- a/Makefile
++++ b/Makefile
+@@ -32,12 +32,18 @@ clean:
+ TESTDIR   = tests
+ TEST_SRC  = $(TESTDIR)/test_http_parser.c src/http.c external/picohttpparser/picohttpparser.c
+ TEST_BIN  = $(BUILDDIR)/test_http_parser
++BUFFER_TEST_SRC = $(TESTDIR)/test_buffer_ring.c src/http.c src/ws.c src/stats.c external/picohttpparser/picohttpparser.c
++BUFFER_TEST_BIN = $(BUILDDIR)/test_buffer_ring
+ 
+ $(TEST_BIN): $(TEST_SRC) | $(BUILDDIR)
+ 	$(CC) $(CFLAGS) -o $@ $(TEST_SRC)
+ 
+-test-unit: $(TEST_BIN)
++$(BUFFER_TEST_BIN): $(BUFFER_TEST_SRC) src/worker.c include/worker.h | $(BUILDDIR)
++	$(CC) $(CFLAGS) -o $@ $(BUFFER_TEST_SRC) $(LDFLAGS)
++
++test-unit: $(TEST_BIN) $(BUFFER_TEST_BIN)
+ 	./$(TEST_BIN)
++	./$(BUFFER_TEST_BIN)
+ 
+ # Every executable tests/test_*.sh is an integration test; adding one needs no
+ # Makefile change.
+diff --git a/include/worker.h b/include/worker.h
+index b14fb55..4db38b2 100644
+--- a/include/worker.h
++++ b/include/worker.h
+@@ -58,7 +58,6 @@ typedef struct worker {
+     struct io_uring           ring;
+     struct io_uring_buf_ring *buf_ring;
+     uint8_t                  *buf_slab;
+-    uint32_t                  buf_index;
+     uint32_t                  buf_mask;
+     gc_conn_t                *conns;
+     int                       num_conns;
+diff --git a/src/worker.c b/src/worker.c
+index 37facc3..8fedf71 100644
+--- a/src/worker.c
++++ b/src/worker.c
+@@ -23,8 +23,9 @@ static inline struct io_uring_sqe *sqe_get(struct io_uring *ring)
+ static inline void return_buffer(worker_t *w, uint16_t bid)
+ {
+     uint8_t *addr = w->buf_slab + (size_t)bid * w->recv_buf_size;
++    /* Offset is relative to the current tail; each return advances it. */
+     io_uring_buf_ring_add(w->buf_ring, addr, w->recv_buf_size,
+-                          bid, w->buf_mask, w->buf_index++);
++                          bid, w->buf_mask, 0);
+     io_uring_buf_ring_advance(w->buf_ring, 1);
+ }
+ 
+@@ -347,7 +348,7 @@ void worker_init(worker_t *w,
+     for (int i = 0; i < BUF_RING_ENTRIES; i++) {
+         uint8_t *a = w->buf_slab + (size_t)i * w->recv_buf_size;
+         io_uring_buf_ring_add(w->buf_ring, a, w->recv_buf_size,
+-                              i, w->buf_mask, w->buf_index++);
++                              i, w->buf_mask, i);
+     }
+     io_uring_buf_ring_advance(w->buf_ring, BUF_RING_ENTRIES);
+ 
+diff --git a/tests/test_buffer_ring.c b/tests/test_buffer_ring.c
+new file mode 100644
+index 0000000..7c7c658
+--- /dev/null
++++ b/tests/test_buffer_ring.c
+@@ -0,0 +1,42 @@
++/* Test the actual return path without needing an io_uring-capable kernel. */
++#include "../src/worker.c"
++
++int main(void)
++{
++    worker_t *w = calloc(1, sizeof(*w));
++    if (!w) return 1;
++    w->recv_buf_size = 64;
++    w->buf_mask = BUF_RING_ENTRIES - 1;
++    w->buf_ring = calloc(BUF_RING_ENTRIES, sizeof(struct io_uring_buf));
++    w->buf_slab = malloc((size_t)BUF_RING_ENTRIES * w->recv_buf_size);
++    if (!w->buf_ring || !w->buf_slab) return 1;
++
++    for (int i = 0; i < BUF_RING_ENTRIES; i++) {
++        io_uring_buf_ring_add(w->buf_ring,
++                             w->buf_slab + (size_t)i * w->recv_buf_size,
++                             w->recv_buf_size, i, w->buf_mask, i);
++    }
++    io_uring_buf_ring_advance(w->buf_ring, BUF_RING_ENTRIES);
++
++    /* Model consuming and returning one descriptor at a time, past both the
++       descriptor-ring and 16-bit tail wrap. Unconsumed slots must stay intact. */
++    int failed = 0;
++    for (unsigned head = 0; head < 2 * 65536; head++) {
++        const unsigned slot = head & w->buf_mask;
++        const struct io_uring_buf *buf = &w->buf_ring->bufs[slot];
++        if (buf->bid != slot || buf->len != (unsigned)w->recv_buf_size ||
++            buf->addr != (uintptr_t)(w->buf_slab + (size_t)slot * w->recv_buf_size)) {
++            fprintf(stderr, "buffer ring: unconsumed slot %u overwritten "
++                            "at head %u (bid=%u)\n", slot, head, buf->bid);
++            failed = 1;
++            break;
++        }
++        return_buffer(w, buf->bid);
++    }
++
++    free(w->buf_slab);
++    free(w->buf_ring);
++    free(w);
++    if (!failed) puts("buffer ring: 131072 returns preserve unconsumed descriptors");
++    return failed;
++}
+diff --git a/tests/test_http_parser.c b/tests/test_http_parser.c
+index 75c540a..1296d24 100644
+--- a/tests/test_http_parser.c
++++ b/tests/test_http_parser.c
+@@ -180,6 +180,60 @@ static void test_cl_split_sweep(void)
+     }
+ }
+ 
++static void test_cl_large_fragmented_pipeline(void)
++{
++    begin("content-length: large UTF-8 bodies, fragmented and pipelined");
++
++    enum { BODY_SIZE = 32768, RESPONSES = 100 };
++    char *one = malloc(BODY_SIZE + 128);
++    const int header_len = sprintf(one,
++        "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", BODY_SIZE);
++    const char utf8[] = "x\xce\xbb\xf0\x9f\x98\x80";
++    for (int i = 0; i < BODY_SIZE; i++)
++        one[header_len + i] = utf8[i % (sizeof(utf8) - 1)];
++    const int one_len = header_len + BODY_SIZE;
++    char *stream = malloc((size_t)one_len * RESPONSES);
++    for (int i = 0; i < RESPONSES; i++)
++        memcpy(stream + i * one_len, one, one_len);
++
++    for (int cut = 1; cut <= header_len; cut++) {
++        http_parser_t p;
++        http_parser_reset(&p);
++        int err = 0;
++        const int got = feed_pieces(&p, stream, one_len * 2, &cut, 1, &err);
++        CHECK(!err && got == 2 && parser_is_pristine(&p),
++              "large response header split at %d: got %d, error=%d", cut, got, err);
++    }
++
++    const int sizes[] = { 1, 7, 1023, 1024, 4095, 4096, 4097, 8192, 65536 };
++    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
++        http_parser_t p;
++        http_parser_reset(&p);
++        int err = 0;
++        const int got = feed_fixed(&p, stream, one_len * RESPONSES, sizes[i], &err);
++        CHECK(!err && got == RESPONSES && parser_is_pristine(&p),
++              "large pipeline, recv size %d: got %d, error=%d", sizes[i], got, err);
++    }
++
++    http_parser_t p;
++    http_parser_reset(&p);
++    unsigned rng = 1;
++    int got = 0, err = 0;
++    for (int off = 0; off < one_len * RESPONSES;) {
++        rng = rng * 1664525u + 1013904223u;
++        int n = (int)(rng % 8192) + 1;
++        if (n > one_len * RESPONSES - off) n = one_len * RESPONSES - off;
++        const int r = http_parse_responses(&p, (const uint8_t *)stream + off, n);
++        if (r < 0) { err = 1; break; }
++        got += r;
++        off += n;
++    }
++    CHECK(!err && got == RESPONSES && parser_is_pristine(&p),
++          "large pipeline, random recv sizes: got %d, error=%d", got, err);
++    free(stream);
++    free(one);
++}
++
+ /* ── tests: chunked ────────────────────────────────────────────────── */
+ 
+ static void test_chunked_whole(void)
+@@ -569,6 +623,7 @@ int main(void)
+ 
+     test_cl_whole();
+     test_cl_split_sweep();
++    test_cl_large_fragmented_pipeline();
+ 
+     test_chunked_whole();
+     test_chunked_split_sweep_single();
+-- 
+2.55.0
+

@@ -1,0 +1,1395 @@
+From da324ed6c4c35524c1206abab2cb60e39a51d4b5 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:14:09 +0200
+Subject: [PATCH 1/5] Use Micronaut Serialization for legacy JSON entry
+
+---
+ frameworks/micronaut/README.md                |  3 +-
+ frameworks/micronaut/meta.json                |  2 +-
+ frameworks/micronaut/pom.xml                  | 22 ++++++++++--
+ .../src/main/java/httparena/Dataset.java      |  4 +--
+ .../src/main/java/httparena/Item.java         |  3 ++
+ .../main/java/httparena/ItemsResponse.java    |  3 ++
+ .../src/main/java/httparena/PricedItem.java   |  3 ++
+ .../src/main/java/httparena/Rating.java       |  3 ++
+ .../src/main/resources/application.properties |  2 +-
+ .../java/httparena/SerializationTest.java     | 36 +++++++++++++++++++
+ 10 files changed, 74 insertions(+), 7 deletions(-)
+ create mode 100644 frameworks/micronaut/src/test/java/httparena/SerializationTest.java
+
+diff --git a/frameworks/micronaut/README.md b/frameworks/micronaut/README.md
+index 20b3edb8..68f3b68e 100644
+--- a/frameworks/micronaut/README.md
++++ b/frameworks/micronaut/README.md
+@@ -23,7 +23,8 @@ Micronaut on the Netty HTTP server, default configuration, on the JVM.
+ - Routing and path parameters through the `@Controller` annotations, all resolved
+   at compile time by the Micronaut annotation processor, so there is no
+   reflection and no classpath scanning at startup
+-- JSON serialized by Jackson from Java records
++- JSON read and written by Micronaut Serialization from compile-time generated
++  serializers for Java records, using Jackson Core without Jackson Databind
+ - Compression is the Netty server compression that Micronaut turns on by itself,
+   over its default 1 KB threshold
+ - No cluster of processes: the JVM is one process and Netty sizes its event loop
+diff --git a/frameworks/micronaut/meta.json b/frameworks/micronaut/meta.json
+index 8cb2c7fc..06718812 100644
+--- a/frameworks/micronaut/meta.json
++++ b/frameworks/micronaut/meta.json
+@@ -10,7 +10,7 @@
+     "response": true
+   },
+   "engine": "netty",
+-  "description": "Micronaut 5 on the Netty HTTP server, default configuration, running on the JVM and not on native-image. Routing and injection are generated at compile time by the Micronaut annotation processor, JSON through Jackson, gzip through the Netty server compression the framework enables by itself.",
++  "description": "Micronaut 5 on the Netty HTTP server, default configuration, running on the JVM and not on native-image. Routing and injection are generated at compile time by the Micronaut annotation processor, JSON through Micronaut Serialization with Jackson Core and no Jackson Databind, gzip through the Netty server compression the framework enables by itself.",
+   "repo": "https://github.com/micronaut-projects/micronaut-core",
+   "enabled": true,
+   "tests": [
+diff --git a/frameworks/micronaut/pom.xml b/frameworks/micronaut/pom.xml
+index 4245c9da..abaf613d 100644
+--- a/frameworks/micronaut/pom.xml
++++ b/frameworks/micronaut/pom.xml
+@@ -31,8 +31,8 @@
+       <scope>compile</scope>
+     </dependency>
+     <dependency>
+-      <groupId>io.micronaut</groupId>
+-      <artifactId>micronaut-jackson-databind</artifactId>
++      <groupId>io.micronaut.serde</groupId>
++      <artifactId>micronaut-serde-jackson</artifactId>
+       <scope>compile</scope>
+     </dependency>
+     <dependency>
+@@ -40,11 +40,29 @@
+       <artifactId>logback-classic</artifactId>
+       <scope>runtime</scope>
+     </dependency>
++    <dependency>
++      <groupId>org.junit.jupiter</groupId>
++      <artifactId>junit-jupiter-engine</artifactId>
++      <scope>test</scope>
++    </dependency>
+   </dependencies>
+ 
+   <build>
+     <finalName>micronaut-httparena</finalName>
+     <plugins>
++      <plugin>
++        <groupId>org.apache.maven.plugins</groupId>
++        <artifactId>maven-compiler-plugin</artifactId>
++        <configuration>
++          <annotationProcessorPaths combine.children="append">
++            <path>
++              <groupId>io.micronaut.serde</groupId>
++              <artifactId>micronaut-serde-processor</artifactId>
++              <version>${micronaut.serialization.version}</version>
++            </path>
++          </annotationProcessorPaths>
++        </configuration>
++      </plugin>
+       <plugin>
+         <groupId>org.apache.maven.plugins</groupId>
+         <artifactId>maven-shade-plugin</artifactId>
+diff --git a/frameworks/micronaut/src/main/java/httparena/Dataset.java b/frameworks/micronaut/src/main/java/httparena/Dataset.java
+index 1bf84dc0..9ab2e680 100644
+--- a/frameworks/micronaut/src/main/java/httparena/Dataset.java
++++ b/frameworks/micronaut/src/main/java/httparena/Dataset.java
+@@ -5,7 +5,7 @@ import java.nio.file.Path;
+ import java.util.List;
+ 
+ import io.micronaut.core.type.Argument;
+-import io.micronaut.json.JsonMapper;
++import io.micronaut.serde.ObjectMapper;
+ 
+ import jakarta.inject.Singleton;
+ 
+@@ -18,7 +18,7 @@ public class Dataset {
+ 
+     private final List<Item> items;
+ 
+-    Dataset(JsonMapper jsonMapper) {
++    Dataset(ObjectMapper jsonMapper) {
+         String path = System.getenv().getOrDefault("DATASET_PATH", "/data/dataset.json");
+         List<Item> loaded = List.of();
+         try {
+diff --git a/frameworks/micronaut/src/main/java/httparena/Item.java b/frameworks/micronaut/src/main/java/httparena/Item.java
+index b779e2f9..ef073939 100644
+--- a/frameworks/micronaut/src/main/java/httparena/Item.java
++++ b/frameworks/micronaut/src/main/java/httparena/Item.java
+@@ -1,8 +1,11 @@
+ package httparena;
+ 
++import io.micronaut.serde.annotation.Serdeable;
++
+ import java.util.List;
+ 
+ /** One dataset record, as read from dataset.json. */
++@Serdeable
+ public record Item(
+         long id,
+         String name,
+diff --git a/frameworks/micronaut/src/main/java/httparena/ItemsResponse.java b/frameworks/micronaut/src/main/java/httparena/ItemsResponse.java
+index aa02d912..a819056b 100644
+--- a/frameworks/micronaut/src/main/java/httparena/ItemsResponse.java
++++ b/frameworks/micronaut/src/main/java/httparena/ItemsResponse.java
+@@ -1,7 +1,10 @@
+ package httparena;
+ 
++import io.micronaut.serde.annotation.Serdeable;
++
+ import java.util.List;
+ 
+ /** {"items":[...],"count":N} */
++@Serdeable
+ public record ItemsResponse(List<PricedItem> items, int count) {
+ }
+diff --git a/frameworks/micronaut/src/main/java/httparena/PricedItem.java b/frameworks/micronaut/src/main/java/httparena/PricedItem.java
+index 0eacc2d6..64079fcc 100644
+--- a/frameworks/micronaut/src/main/java/httparena/PricedItem.java
++++ b/frameworks/micronaut/src/main/java/httparena/PricedItem.java
+@@ -1,8 +1,11 @@
+ package httparena;
+ 
++import io.micronaut.serde.annotation.Serdeable;
++
+ import java.util.List;
+ 
+ /** A dataset record plus the computed total, in the field order the profile asks for. */
++@Serdeable
+ public record PricedItem(
+         long id,
+         String name,
+diff --git a/frameworks/micronaut/src/main/java/httparena/Rating.java b/frameworks/micronaut/src/main/java/httparena/Rating.java
+index f26fb5c4..c191973a 100644
+--- a/frameworks/micronaut/src/main/java/httparena/Rating.java
++++ b/frameworks/micronaut/src/main/java/httparena/Rating.java
+@@ -1,5 +1,8 @@
+ package httparena;
+ 
++import io.micronaut.serde.annotation.Serdeable;
++
+ /** Nested rating object, kept nested in the response. */
++@Serdeable
+ public record Rating(long score, long count) {
+ }
+diff --git a/frameworks/micronaut/src/main/resources/application.properties b/frameworks/micronaut/src/main/resources/application.properties
+index 74ce0979..79b23cf7 100644
+--- a/frameworks/micronaut/src/main/resources/application.properties
++++ b/frameworks/micronaut/src/main/resources/application.properties
+@@ -3,4 +3,4 @@ micronaut.server.port=8080
+ # the upload profile posts 20 MB, the default cap is 10 MB
+ micronaut.server.max-request-size=32MB
+ # keep "items":[] in the response when the list is empty, the default drops it
+-jackson.serialization-inclusion=always
++micronaut.serde.serialization.inclusion=always
+diff --git a/frameworks/micronaut/src/test/java/httparena/SerializationTest.java b/frameworks/micronaut/src/test/java/httparena/SerializationTest.java
+new file mode 100644
+index 00000000..05e77f6e
+--- /dev/null
++++ b/frameworks/micronaut/src/test/java/httparena/SerializationTest.java
+@@ -0,0 +1,36 @@
++package httparena;
++
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.core.type.Argument;
++import io.micronaut.json.JsonMapper;
++import io.micronaut.serde.ObjectMapper;
++import org.junit.jupiter.api.Test;
++
++import java.util.List;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++class SerializationTest {
++    @Test
++    void readsDatasetAndWritesCompleteResponsesWithoutDatabind() throws Exception {
++        try (ApplicationContext context = ApplicationContext.run()) {
++            ObjectMapper mapper = context.getBean(ObjectMapper.class);
++            assertSame(mapper, context.getBean(JsonMapper.class));
++            String itemJson = "{\"id\":1,\"name\":\"Café <&> 日本語\",\"category\":\"test\","
++                    + "\"price\":7,\"quantity\":3,\"active\":false,\"tags\":[\"a\\tb\",\"\\\"quoted\\\"\"],"
++                    + "\"rating\":{\"score\":4,\"count\":11}}";
++            Item item = new Item(1, "Café <&> 日本語", "test", 7, 3, false,
++                    List.of("a\tb", "\"quoted\""), new Rating(4, 11));
++            assertEquals(List.of(item), mapper.readValue("[" + itemJson + "]", Argument.listOf(Item.class)));
++            PricedItem priced = new PricedItem(item.id(), item.name(), item.category(), item.price(),
++                    item.quantity(), item.active(), item.tags(), item.rating(), 42);
++            assertEquals("{\"items\":[" + itemJson.substring(0, itemJson.length() - 1)
++                    + ",\"total\":42}],\"count\":1}", mapper.writeValueAsString(new ItemsResponse(List.of(priced), 1)));
++            assertEquals("{\"items\":[],\"count\":0}", mapper.writeValueAsString(new ItemsResponse(List.of(), 0)));
++            assertThrows(ClassNotFoundException.class, () -> Class.forName("tools.jackson.databind.ObjectMapper"));
++            assertThrows(ClassNotFoundException.class, () -> Class.forName("com.fasterxml.jackson.databind.ObjectMapper"));
++        }
++    }
++}
+-- 
+2.55.0
+
+
+From 713f1535642a4cb2ac357f40bff07d99851d2508 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:28:07 +0200
+Subject: [PATCH 2/5] Run legacy serialization regression in Docker builds
+
+---
+ frameworks/micronaut/Dockerfile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/frameworks/micronaut/Dockerfile b/frameworks/micronaut/Dockerfile
+index 7e1227f8..5fdad7a7 100644
+--- a/frameworks/micronaut/Dockerfile
++++ b/frameworks/micronaut/Dockerfile
+@@ -3,7 +3,7 @@ WORKDIR /app
+ COPY pom.xml .
+ RUN mvn -B -q dependency:go-offline
+ COPY src ./src
+-RUN mvn -B -q clean package -DskipTests
++RUN mvn -B -q clean package
+ 
+ FROM eclipse-temurin:25-jre
+ WORKDIR /app
+-- 
+2.55.0
+
+
+From 30af3a2561bc88abce3f4641f37b2f13668a0d02 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 13:54:25 +0200
+Subject: [PATCH 3/5] micronaut: forward buffered echo bodies through the
+ native writer
+
+---
+ .../java/httparena/BenchmarkController.java   |  22 +-
+ .../src/main/resources/application.properties |   2 +-
+ .../java/httparena/EchoControllerTest.java    | 189 ++++++++++++++++++
+ .../java/httparena/BenchmarkController.java   |  22 +-
+ .../src/main/resources/application.properties |   2 +-
+ .../java/httparena/EchoControllerTest.java    | 189 ++++++++++++++++++
+ 6 files changed, 418 insertions(+), 8 deletions(-)
+ create mode 100644 frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java
+ create mode 100644 frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java
+
+diff --git a/frameworks/micronaut-production/src/main/java/httparena/BenchmarkController.java b/frameworks/micronaut-production/src/main/java/httparena/BenchmarkController.java
+index 2a26dcba..c1b256b8 100644
+--- a/frameworks/micronaut-production/src/main/java/httparena/BenchmarkController.java
++++ b/frameworks/micronaut-production/src/main/java/httparena/BenchmarkController.java
+@@ -11,12 +11,15 @@ import java.util.concurrent.CompletableFuture;
+ import io.micronaut.core.annotation.Nullable;
+ import io.micronaut.http.HttpRequest;
+ import io.micronaut.http.MediaType;
++import io.micronaut.http.ServerHttpRequest;
++import io.micronaut.http.body.ByteBody;
+ import io.micronaut.http.annotation.Body;
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
+ import io.micronaut.http.annotation.PathVariable;
+ import io.micronaut.http.annotation.Post;
+ import io.micronaut.http.annotation.QueryValue;
++import io.netty.buffer.ByteBuf;
+ 
+ @Controller
+ public class BenchmarkController {
+@@ -85,10 +88,23 @@ public class BenchmarkController {
+         return new ItemsResponse(items, n);
+     }
+ 
+-    /** The framework aggregates the body, which also covers a chunked request, and the echo returns it. */
++    /** Buffer before responding so both request and buffer limits can still produce a 413. */
+     @Post(value = "/echo", consumes = MediaType.ALL, produces = MediaType.APPLICATION_OCTET_STREAM)
+-    public byte[] echoBody(@Body @Nullable byte[] body) {
+-        return body == null ? new byte[0] : body;
++    public CompletableFuture<ByteBuf> echoBody(ServerHttpRequest<?> request) {
++        CompletableFuture<ByteBuf> response = new CompletableFuture<>();
++        request.byteBody().split(ByteBody.SplitBackpressureMode.FASTEST).buffer().whenComplete((body, error) -> {
++            if (error != null) {
++                response.completeExceptionally(error);
++            } else {
++                // The Netty response writer takes ownership of this split's native buffer.
++                ByteBuf bytes = (ByteBuf) body.toByteBuffer().asNativeBuffer();
++                if (!response.complete(bytes)) {
++                    // A cancelled response cannot take ownership of the buffered body.
++                    bytes.release();
++                }
++            }
++        });
++        return response;
+     }
+ 
+     private static long querySum(HttpRequest<?> request) {
+diff --git a/frameworks/micronaut-production/src/main/resources/application.properties b/frameworks/micronaut-production/src/main/resources/application.properties
+index 7503eb3c..a48280e6 100644
+--- a/frameworks/micronaut-production/src/main/resources/application.properties
++++ b/frameworks/micronaut-production/src/main/resources/application.properties
+@@ -2,7 +2,7 @@ micronaut.application.name=micronaut-httparena
+ micronaut.server.port=8080
+ # the upload profile posts 20 MB, the default cap is 10 MB
+ micronaut.server.max-request-size=32MB
+-# a body bound as a byte array is buffered, the default buffer cap of 10 MB is lower than the request cap
++# echo buffers the full body; the default buffer cap of 10 MB is lower than the request cap
+ micronaut.server.max-request-buffer-size=32MB
+ # keep "items":[] in the response when the list is empty, the default drops it
+ micronaut.serde.serialization.inclusion=always
+diff --git a/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java b/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java
+new file mode 100644
+index 00000000..fc479f86
+--- /dev/null
++++ b/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java
+@@ -0,0 +1,189 @@
++package httparena;
++
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.http.ServerHttpRequest;
++import io.micronaut.http.body.ByteBody;
++import io.micronaut.http.body.CloseableByteBody;
++import io.micronaut.http.body.stream.BodySizeLimits;
++import io.micronaut.http.body.stream.BufferConsumer;
++import io.micronaut.http.netty.body.NettyByteBodyFactory;
++import io.micronaut.runtime.server.EmbeddedServer;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.Unpooled;
++import io.netty.channel.embedded.EmbeddedChannel;
++import org.junit.jupiter.api.Test;
++
++import java.io.ByteArrayInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.lang.reflect.Proxy;
++import java.net.Socket;
++import java.net.SocketTimeoutException;
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.nio.charset.StandardCharsets;
++import java.time.Duration;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++class EchoControllerTest {
++    @Test
++    void forwardsNativeStorageWithoutConsumingTheRequestsBody() {
++        EmbeddedChannel channel = new EmbeddedChannel();
++        try {
++            NettyByteBodyFactory factory = new NettyByteBodyFactory(channel);
++            ByteBuf bytes = Unpooled.directBuffer().writeBytes(new byte[]{0, -1, 1, -128});
++            long address = bytes.memoryAddress();
++            try (CloseableByteBody original = factory.adapt(bytes)) {
++                ByteBuf forwarded = echo(original).join();
++                try {
++                    assertEquals(address, forwarded.memoryAddress());
++                    assertArrayEquals(new byte[]{0, -1, 1, -128}, original.buffer().join().toByteArray());
++                    assertEquals(4, forwarded.readableBytes());
++                } finally {
++                    forwarded.release();
++                }
++            }
++            assertEquals(0, bytes.refCnt());
++        } finally {
++            channel.finishAndReleaseAll();
++        }
++    }
++
++    @Test
++    void cancellationAndReadFailureReleaseBufferedNativeStorage() {
++        EmbeddedChannel channel = new EmbeddedChannel();
++        try {
++            NettyByteBodyFactory factory = new NettyByteBodyFactory(channel);
++            for (boolean cancel : new boolean[]{false, true}) {
++                var source = factory.createStreamingBody(BodySizeLimits.UNLIMITED, new BufferConsumer.Upstream() {
++                    @Override
++                    public void onBytesConsumed(long bytes) {
++                    }
++                });
++                ByteBuf bytes = Unpooled.directBuffer().writeByte(42);
++                CompletableFuture<ByteBuf> response = echo(source.rootBody());
++                source.sharedBuffer().add(factory.readBufferFactory().adapt(bytes));
++                assertFalse(response.isDone());
++                if (cancel) {
++                    assertTrue(response.cancel(false));
++                    source.sharedBuffer().complete();
++                } else {
++                    source.sharedBuffer().error(new IllegalStateException("read failed"));
++                    assertThrows(CompletionException.class, response::join);
++                }
++                source.rootBody().close();
++                assertEquals(0, bytes.refCnt());
++            }
++        } finally {
++            channel.finishAndReleaseAll();
++        }
++    }
++
++    @Test
++    void echoesEmptyBinaryLargeAndChunkedBodies() throws Exception {
++        try (ApplicationContext context = serverContext(Map.of());
++             HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()) {
++            EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++            URI uri = URI.create("http://localhost:" + server.getPort() + "/echo");
++            for (int size : new int[]{0, 256 * 1024, 20 * 1024 * 1024, 32 * 1024 * 1024}) {
++                byte[] body = new byte[size];
++                for (int i = 0; i < size; i++) {
++                    body[i] = (byte) i;
++                }
++                for (boolean chunked : new boolean[]{false, true}) {
++                    if (chunked && (size == 0 || size == 32 * 1024 * 1024)) {
++                        continue;
++                    }
++                    var publisher = chunked ? HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(body))
++                            : HttpRequest.BodyPublishers.ofByteArray(body);
++                    HttpResponse<byte[]> response = client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30))
++                            .header("Content-Type", "application/octet-stream").POST(publisher).build(), HttpResponse.BodyHandlers.ofByteArray());
++                    assertEquals(200, response.statusCode());
++                    assertEquals("application/octet-stream", response.headers().firstValue("content-type").orElseThrow());
++                    assertArrayEquals(body, response.body());
++                }
++            }
++            try (Socket socket = new Socket("localhost", server.getPort())) {
++                var output = socket.getOutputStream();
++                output.write(("POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
++                        + "4\r\npart\r\n").getBytes(StandardCharsets.US_ASCII));
++                output.flush();
++                socket.setSoTimeout(200);
++                assertThrows(SocketTimeoutException.class, () -> socket.getInputStream().read());
++                output.write("4\r\nlast\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
++                output.flush();
++                socket.setSoTimeout(5000);
++                assertTrue(readHead(socket.getInputStream()).startsWith("HTTP/1.1 200 "));
++                assertArrayEquals("partlast".getBytes(StandardCharsets.US_ASCII), socket.getInputStream().readNBytes(8));
++            }
++        }
++    }
++
++    @Test
++    void rejectsRequestAndBufferOverflowsBeforeWritingSuccessHeaders() throws Exception {
++        for (String limit : new String[]{"micronaut.server.max-request-size", "micronaut.server.max-request-buffer-size"}) {
++            try (ApplicationContext context = serverContext(Map.of(limit, "1KB"))) {
++                EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++                for (boolean chunked : new boolean[]{false, true}) {
++                    try (Socket socket = new Socket("localhost", server.getPort())) {
++                        socket.setSoTimeout(5000);
++                        var output = socket.getOutputStream();
++                        output.write(("POST /echo HTTP/1.1\r\nHost: localhost\r\n"
++                                + (chunked ? "Transfer-Encoding: chunked" : "Content-Length: 2048") + "\r\n\r\n")
++                                .getBytes(StandardCharsets.US_ASCII));
++                        if (chunked) {
++                            output.write("800\r\n".getBytes(StandardCharsets.US_ASCII));
++                        }
++                        output.write(new byte[2048]);
++                        if (chunked) {
++                            output.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
++                        }
++                        output.flush();
++                        String head = readHead(socket.getInputStream());
++                        assertTrue(head.startsWith("HTTP/1.1 413 "), head);
++                    }
++                }
++            }
++        }
++    }
++
++    private static CompletableFuture<ByteBuf> echo(ByteBody body) {
++        ServerHttpRequest<?> request = (ServerHttpRequest<?>) Proxy.newProxyInstance(
++                ServerHttpRequest.class.getClassLoader(), new Class<?>[]{ServerHttpRequest.class},
++                (proxy, method, args) -> {
++                    assertEquals("byteBody", method.getName());
++                    return body;
++                });
++        return new BenchmarkController(null).echoBody(request);
++    }
++
++    private static ApplicationContext serverContext(Map<String, Object> overrides) {
++        Map<String, Object> properties = new HashMap<>(overrides);
++        for (String listener : new String[]{"http", "https", "h2tls", "h2c", "h3"}) {
++            properties.put("micronaut.server.netty.listeners." + listener + ".port", -1);
++            properties.put("micronaut.server.netty.listeners." + listener + ".ssl", false);
++            properties.put("micronaut.server.netty.listeners." + listener + ".family", "TCP");
++        }
++        properties.put("micronaut.netty.event-loops.default.num-threads", 2);
++        return ApplicationContext.run(properties);
++    }
++
++    private static String readHead(InputStream input) throws Exception {
++        ByteArrayOutputStream head = new ByteArrayOutputStream();
++        int matched = 0;
++        while (matched < 4) {
++            int b = input.read();
++            assertTrue(b >= 0, head.toString(StandardCharsets.US_ASCII));
++            head.write(b);
++            matched = (b == '\r' && (matched == 0 || matched == 2)) || (b == '\n' && (matched == 1 || matched == 3)) ? matched + 1 : 0;
++        }
++        return head.toString(StandardCharsets.US_ASCII);
++    }
++}
+diff --git a/frameworks/micronaut-tuned/src/main/java/httparena/BenchmarkController.java b/frameworks/micronaut-tuned/src/main/java/httparena/BenchmarkController.java
+index 9e888c9e..383ff0da 100644
+--- a/frameworks/micronaut-tuned/src/main/java/httparena/BenchmarkController.java
++++ b/frameworks/micronaut-tuned/src/main/java/httparena/BenchmarkController.java
+@@ -11,12 +11,15 @@ import java.util.concurrent.CompletableFuture;
+ import io.micronaut.core.annotation.Nullable;
+ import io.micronaut.http.HttpRequest;
+ import io.micronaut.http.MediaType;
++import io.micronaut.http.ServerHttpRequest;
++import io.micronaut.http.body.ByteBody;
+ import io.micronaut.http.annotation.Body;
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
+ import io.micronaut.http.annotation.PathVariable;
+ import io.micronaut.http.annotation.Post;
+ import io.micronaut.http.annotation.QueryValue;
++import io.netty.buffer.ByteBuf;
+ import io.netty.util.concurrent.EventExecutor;
+ import io.netty.util.internal.ThreadExecutorMap;
+ 
+@@ -94,10 +97,23 @@ public class BenchmarkController {
+         return new ItemsResponse(items, n);
+     }
+ 
+-    /** The framework aggregates the body, which also covers a chunked request, and the echo returns it. */
++    /** Buffer before responding so both request and buffer limits can still produce a 413. */
+     @Post(value = "/echo", consumes = MediaType.ALL, produces = MediaType.APPLICATION_OCTET_STREAM)
+-    public byte[] echoBody(@Body @Nullable byte[] body) {
+-        return body == null ? new byte[0] : body;
++    public CompletableFuture<ByteBuf> echoBody(ServerHttpRequest<?> request) {
++        CompletableFuture<ByteBuf> response = new CompletableFuture<>();
++        request.byteBody().split(ByteBody.SplitBackpressureMode.FASTEST).buffer().whenComplete((body, error) -> {
++            if (error != null) {
++                response.completeExceptionally(error);
++            } else {
++                // The Netty response writer takes ownership of this split's native buffer.
++                ByteBuf bytes = (ByteBuf) body.toByteBuffer().asNativeBuffer();
++                if (!response.complete(bytes)) {
++                    // A cancelled response cannot take ownership of the buffered body.
++                    bytes.release();
++                }
++            }
++        });
++        return response;
+     }
+ 
+     private static long querySum(HttpRequest<?> request) {
+diff --git a/frameworks/micronaut-tuned/src/main/resources/application.properties b/frameworks/micronaut-tuned/src/main/resources/application.properties
+index 2b2f2c8a..08183706 100644
+--- a/frameworks/micronaut-tuned/src/main/resources/application.properties
++++ b/frameworks/micronaut-tuned/src/main/resources/application.properties
+@@ -2,7 +2,7 @@ micronaut.application.name=micronaut-httparena
+ micronaut.server.port=8080
+ # the upload profile posts 20 MB, the default cap is 10 MB
+ micronaut.server.max-request-size=32MB
+-# a body bound as a byte array is buffered, the default buffer cap of 10 MB is lower than the request cap
++# echo buffers the full body; the default buffer cap of 10 MB is lower than the request cap
+ micronaut.server.max-request-buffer-size=32MB
+ # keep "items":[] in the response when the list is empty, the default drops it
+ micronaut.serde.serialization.inclusion=always
+diff --git a/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java b/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java
+new file mode 100644
+index 00000000..fc479f86
+--- /dev/null
++++ b/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java
+@@ -0,0 +1,189 @@
++package httparena;
++
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.http.ServerHttpRequest;
++import io.micronaut.http.body.ByteBody;
++import io.micronaut.http.body.CloseableByteBody;
++import io.micronaut.http.body.stream.BodySizeLimits;
++import io.micronaut.http.body.stream.BufferConsumer;
++import io.micronaut.http.netty.body.NettyByteBodyFactory;
++import io.micronaut.runtime.server.EmbeddedServer;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.Unpooled;
++import io.netty.channel.embedded.EmbeddedChannel;
++import org.junit.jupiter.api.Test;
++
++import java.io.ByteArrayInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.lang.reflect.Proxy;
++import java.net.Socket;
++import java.net.SocketTimeoutException;
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.nio.charset.StandardCharsets;
++import java.time.Duration;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++class EchoControllerTest {
++    @Test
++    void forwardsNativeStorageWithoutConsumingTheRequestsBody() {
++        EmbeddedChannel channel = new EmbeddedChannel();
++        try {
++            NettyByteBodyFactory factory = new NettyByteBodyFactory(channel);
++            ByteBuf bytes = Unpooled.directBuffer().writeBytes(new byte[]{0, -1, 1, -128});
++            long address = bytes.memoryAddress();
++            try (CloseableByteBody original = factory.adapt(bytes)) {
++                ByteBuf forwarded = echo(original).join();
++                try {
++                    assertEquals(address, forwarded.memoryAddress());
++                    assertArrayEquals(new byte[]{0, -1, 1, -128}, original.buffer().join().toByteArray());
++                    assertEquals(4, forwarded.readableBytes());
++                } finally {
++                    forwarded.release();
++                }
++            }
++            assertEquals(0, bytes.refCnt());
++        } finally {
++            channel.finishAndReleaseAll();
++        }
++    }
++
++    @Test
++    void cancellationAndReadFailureReleaseBufferedNativeStorage() {
++        EmbeddedChannel channel = new EmbeddedChannel();
++        try {
++            NettyByteBodyFactory factory = new NettyByteBodyFactory(channel);
++            for (boolean cancel : new boolean[]{false, true}) {
++                var source = factory.createStreamingBody(BodySizeLimits.UNLIMITED, new BufferConsumer.Upstream() {
++                    @Override
++                    public void onBytesConsumed(long bytes) {
++                    }
++                });
++                ByteBuf bytes = Unpooled.directBuffer().writeByte(42);
++                CompletableFuture<ByteBuf> response = echo(source.rootBody());
++                source.sharedBuffer().add(factory.readBufferFactory().adapt(bytes));
++                assertFalse(response.isDone());
++                if (cancel) {
++                    assertTrue(response.cancel(false));
++                    source.sharedBuffer().complete();
++                } else {
++                    source.sharedBuffer().error(new IllegalStateException("read failed"));
++                    assertThrows(CompletionException.class, response::join);
++                }
++                source.rootBody().close();
++                assertEquals(0, bytes.refCnt());
++            }
++        } finally {
++            channel.finishAndReleaseAll();
++        }
++    }
++
++    @Test
++    void echoesEmptyBinaryLargeAndChunkedBodies() throws Exception {
++        try (ApplicationContext context = serverContext(Map.of());
++             HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()) {
++            EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++            URI uri = URI.create("http://localhost:" + server.getPort() + "/echo");
++            for (int size : new int[]{0, 256 * 1024, 20 * 1024 * 1024, 32 * 1024 * 1024}) {
++                byte[] body = new byte[size];
++                for (int i = 0; i < size; i++) {
++                    body[i] = (byte) i;
++                }
++                for (boolean chunked : new boolean[]{false, true}) {
++                    if (chunked && (size == 0 || size == 32 * 1024 * 1024)) {
++                        continue;
++                    }
++                    var publisher = chunked ? HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(body))
++                            : HttpRequest.BodyPublishers.ofByteArray(body);
++                    HttpResponse<byte[]> response = client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30))
++                            .header("Content-Type", "application/octet-stream").POST(publisher).build(), HttpResponse.BodyHandlers.ofByteArray());
++                    assertEquals(200, response.statusCode());
++                    assertEquals("application/octet-stream", response.headers().firstValue("content-type").orElseThrow());
++                    assertArrayEquals(body, response.body());
++                }
++            }
++            try (Socket socket = new Socket("localhost", server.getPort())) {
++                var output = socket.getOutputStream();
++                output.write(("POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
++                        + "4\r\npart\r\n").getBytes(StandardCharsets.US_ASCII));
++                output.flush();
++                socket.setSoTimeout(200);
++                assertThrows(SocketTimeoutException.class, () -> socket.getInputStream().read());
++                output.write("4\r\nlast\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
++                output.flush();
++                socket.setSoTimeout(5000);
++                assertTrue(readHead(socket.getInputStream()).startsWith("HTTP/1.1 200 "));
++                assertArrayEquals("partlast".getBytes(StandardCharsets.US_ASCII), socket.getInputStream().readNBytes(8));
++            }
++        }
++    }
++
++    @Test
++    void rejectsRequestAndBufferOverflowsBeforeWritingSuccessHeaders() throws Exception {
++        for (String limit : new String[]{"micronaut.server.max-request-size", "micronaut.server.max-request-buffer-size"}) {
++            try (ApplicationContext context = serverContext(Map.of(limit, "1KB"))) {
++                EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++                for (boolean chunked : new boolean[]{false, true}) {
++                    try (Socket socket = new Socket("localhost", server.getPort())) {
++                        socket.setSoTimeout(5000);
++                        var output = socket.getOutputStream();
++                        output.write(("POST /echo HTTP/1.1\r\nHost: localhost\r\n"
++                                + (chunked ? "Transfer-Encoding: chunked" : "Content-Length: 2048") + "\r\n\r\n")
++                                .getBytes(StandardCharsets.US_ASCII));
++                        if (chunked) {
++                            output.write("800\r\n".getBytes(StandardCharsets.US_ASCII));
++                        }
++                        output.write(new byte[2048]);
++                        if (chunked) {
++                            output.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
++                        }
++                        output.flush();
++                        String head = readHead(socket.getInputStream());
++                        assertTrue(head.startsWith("HTTP/1.1 413 "), head);
++                    }
++                }
++            }
++        }
++    }
++
++    private static CompletableFuture<ByteBuf> echo(ByteBody body) {
++        ServerHttpRequest<?> request = (ServerHttpRequest<?>) Proxy.newProxyInstance(
++                ServerHttpRequest.class.getClassLoader(), new Class<?>[]{ServerHttpRequest.class},
++                (proxy, method, args) -> {
++                    assertEquals("byteBody", method.getName());
++                    return body;
++                });
++        return new BenchmarkController(null).echoBody(request);
++    }
++
++    private static ApplicationContext serverContext(Map<String, Object> overrides) {
++        Map<String, Object> properties = new HashMap<>(overrides);
++        for (String listener : new String[]{"http", "https", "h2tls", "h2c", "h3"}) {
++            properties.put("micronaut.server.netty.listeners." + listener + ".port", -1);
++            properties.put("micronaut.server.netty.listeners." + listener + ".ssl", false);
++            properties.put("micronaut.server.netty.listeners." + listener + ".family", "TCP");
++        }
++        properties.put("micronaut.netty.event-loops.default.num-threads", 2);
++        return ApplicationContext.run(properties);
++    }
++
++    private static String readHead(InputStream input) throws Exception {
++        ByteArrayOutputStream head = new ByteArrayOutputStream();
++        int matched = 0;
++        while (matched < 4) {
++            int b = input.read();
++            assertTrue(b >= 0, head.toString(StandardCharsets.US_ASCII));
++            head.write(b);
++            matched = (b == '\r' && (matched == 0 || matched == 2)) || (b == '\n' && (matched == 1 || matched == 3)) ? matched + 1 : 0;
++        }
++        return head.toString(StandardCharsets.US_ASCII);
++    }
++}
+-- 
+2.55.0
+
+
+From c124a66ff2d8664b6d2770993c567e0dc9977191 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:23:10 +0200
+Subject: [PATCH 4/5] micronaut: verify echo body release after socket resets
+
+---
+ .../java/httparena/EchoControllerTest.java    |   2 +-
+ .../java/httparena/EchoDisconnectTest.java    | 105 ++++++++++++++++++
+ .../java/httparena/EchoControllerTest.java    |   2 +-
+ .../java/httparena/EchoDisconnectTest.java    | 105 ++++++++++++++++++
+ 4 files changed, 212 insertions(+), 2 deletions(-)
+ create mode 100644 frameworks/micronaut-production/src/test/java/httparena/EchoDisconnectTest.java
+ create mode 100644 frameworks/micronaut-tuned/src/test/java/httparena/EchoDisconnectTest.java
+
+diff --git a/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java b/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java
+index fc479f86..8319ac59 100644
+--- a/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java
++++ b/frameworks/micronaut-production/src/test/java/httparena/EchoControllerTest.java
+@@ -164,7 +164,7 @@ class EchoControllerTest {
+         return new BenchmarkController(null).echoBody(request);
+     }
+ 
+-    private static ApplicationContext serverContext(Map<String, Object> overrides) {
++    static ApplicationContext serverContext(Map<String, Object> overrides) {
+         Map<String, Object> properties = new HashMap<>(overrides);
+         for (String listener : new String[]{"http", "https", "h2tls", "h2c", "h3"}) {
+             properties.put("micronaut.server.netty.listeners." + listener + ".port", -1);
+diff --git a/frameworks/micronaut-production/src/test/java/httparena/EchoDisconnectTest.java b/frameworks/micronaut-production/src/test/java/httparena/EchoDisconnectTest.java
+new file mode 100644
+index 00000000..d040ec2c
+--- /dev/null
++++ b/frameworks/micronaut-production/src/test/java/httparena/EchoDisconnectTest.java
+@@ -0,0 +1,105 @@
++package httparena;
++
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.http.netty.channel.ChannelPipelineCustomizer;
++import io.micronaut.http.server.netty.NettyServerCustomizer;
++import io.micronaut.runtime.server.EmbeddedServer;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.UnpooledByteBufAllocator;
++import io.netty.channel.Channel;
++import io.netty.channel.ChannelDuplexHandler;
++import io.netty.channel.ChannelHandlerContext;
++import io.netty.channel.ChannelPromise;
++import io.netty.handler.codec.http.HttpContent;
++import org.junit.jupiter.api.Test;
++
++import java.net.Socket;
++import java.nio.charset.StandardCharsets;
++import java.util.Map;
++import java.util.concurrent.ConcurrentLinkedQueue;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.LinkedBlockingQueue;
++import java.util.concurrent.TimeUnit;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++class EchoDisconnectTest {
++    @Test
++    void socketDisconnectReleasesInputAndNativeResponses() throws Exception {
++        var connections = new LinkedBlockingQueue<Connection>();
++        try (ApplicationContext context = EchoControllerTest.serverContext(Map.of("micronaut.server.http-version", "1.1"))) {
++            context.getBean(NettyServerCustomizer.Registry.class).register(new NettyServerCustomizer() {
++                @Override
++                public NettyServerCustomizer specializeForChannel(Channel channel, ChannelRole role) {
++                    if (role != ChannelRole.CONNECTION) {
++                        return this;
++                    }
++                    // No pooling/recycling: a captured buffer's refCnt stays zero after release.
++                    channel.config().setAllocator(UnpooledByteBufAllocator.DEFAULT);
++                    Connection connection = new Connection(channel);
++                    connections.add(connection);
++                    return new NettyServerCustomizer() {
++                        @Override
++                        public void onStreamPipelineBuilt() {
++                            channel.pipeline().addBefore(ChannelPipelineCustomizer.HANDLER_MICRONAUT_INBOUND, "echo-ownership", new ChannelDuplexHandler() {
++                                @Override
++                                public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {
++                                    if (message instanceof HttpContent content && content.content().isReadable()) {
++                                        connection.buffers.add(content.content());
++                                        connection.input.countDown();
++                                    }
++                                    super.channelRead(ctx, message);
++                                }
++
++                                @Override
++                                public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) throws Exception {
++                                    if (message instanceof HttpContent content && content.content().isReadable()) {
++                                        connection.buffers.add(content.content());
++                                        connection.output.countDown();
++                                    }
++                                    super.write(ctx, message, promise);
++                                }
++                            });
++                        }
++                    };
++                }
++            });
++            EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++            for (boolean fullBody : new boolean[]{false, true}) {
++                try (Socket socket = new Socket()) {
++                    socket.setReceiveBufferSize(1024);
++                    socket.connect(new java.net.InetSocketAddress("localhost", server.getPort()));
++                    Connection connection = connections.poll(5, TimeUnit.SECONDS);
++                    assertNotNull(connection);
++                    socket.setSoLinger(true, 0);
++                    var output = socket.getOutputStream();
++                    output.write("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
++                    output.write(new byte[fullBody ? 1048576 : 8192]);
++                    output.flush();
++                    assertTrue(connection.input.await(5, TimeUnit.SECONDS));
++                    if (fullBody) {
++                        assertTrue(connection.output.await(5, TimeUnit.SECONDS));
++                    }
++                    socket.close();
++                    assertTrue(connection.channel.closeFuture().await(5, TimeUnit.SECONDS));
++                    connection.channel.eventLoop().submit(() -> {}).get(5, TimeUnit.SECONDS);
++                    assertFalse(connection.buffers.isEmpty());
++                    for (ByteBuf buffer : connection.buffers) {
++                        assertEquals(0, buffer.refCnt(), "unreleased native buffer after disconnect, full body: " + fullBody);
++                    }
++                }
++            }
++        }
++    }
++
++    private static final class Connection {
++        final Channel channel;
++        final ConcurrentLinkedQueue<ByteBuf> buffers = new ConcurrentLinkedQueue<>();
++        final CountDownLatch input = new CountDownLatch(1);
++        final CountDownLatch output = new CountDownLatch(1);
++
++        Connection(Channel channel) {
++            this.channel = channel;
++        }
++    }
++}
+diff --git a/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java b/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java
+index fc479f86..8319ac59 100644
+--- a/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java
++++ b/frameworks/micronaut-tuned/src/test/java/httparena/EchoControllerTest.java
+@@ -164,7 +164,7 @@ class EchoControllerTest {
+         return new BenchmarkController(null).echoBody(request);
+     }
+ 
+-    private static ApplicationContext serverContext(Map<String, Object> overrides) {
++    static ApplicationContext serverContext(Map<String, Object> overrides) {
+         Map<String, Object> properties = new HashMap<>(overrides);
+         for (String listener : new String[]{"http", "https", "h2tls", "h2c", "h3"}) {
+             properties.put("micronaut.server.netty.listeners." + listener + ".port", -1);
+diff --git a/frameworks/micronaut-tuned/src/test/java/httparena/EchoDisconnectTest.java b/frameworks/micronaut-tuned/src/test/java/httparena/EchoDisconnectTest.java
+new file mode 100644
+index 00000000..d040ec2c
+--- /dev/null
++++ b/frameworks/micronaut-tuned/src/test/java/httparena/EchoDisconnectTest.java
+@@ -0,0 +1,105 @@
++package httparena;
++
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.http.netty.channel.ChannelPipelineCustomizer;
++import io.micronaut.http.server.netty.NettyServerCustomizer;
++import io.micronaut.runtime.server.EmbeddedServer;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.UnpooledByteBufAllocator;
++import io.netty.channel.Channel;
++import io.netty.channel.ChannelDuplexHandler;
++import io.netty.channel.ChannelHandlerContext;
++import io.netty.channel.ChannelPromise;
++import io.netty.handler.codec.http.HttpContent;
++import org.junit.jupiter.api.Test;
++
++import java.net.Socket;
++import java.nio.charset.StandardCharsets;
++import java.util.Map;
++import java.util.concurrent.ConcurrentLinkedQueue;
++import java.util.concurrent.CountDownLatch;
++import java.util.concurrent.LinkedBlockingQueue;
++import java.util.concurrent.TimeUnit;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++class EchoDisconnectTest {
++    @Test
++    void socketDisconnectReleasesInputAndNativeResponses() throws Exception {
++        var connections = new LinkedBlockingQueue<Connection>();
++        try (ApplicationContext context = EchoControllerTest.serverContext(Map.of("micronaut.server.http-version", "1.1"))) {
++            context.getBean(NettyServerCustomizer.Registry.class).register(new NettyServerCustomizer() {
++                @Override
++                public NettyServerCustomizer specializeForChannel(Channel channel, ChannelRole role) {
++                    if (role != ChannelRole.CONNECTION) {
++                        return this;
++                    }
++                    // No pooling/recycling: a captured buffer's refCnt stays zero after release.
++                    channel.config().setAllocator(UnpooledByteBufAllocator.DEFAULT);
++                    Connection connection = new Connection(channel);
++                    connections.add(connection);
++                    return new NettyServerCustomizer() {
++                        @Override
++                        public void onStreamPipelineBuilt() {
++                            channel.pipeline().addBefore(ChannelPipelineCustomizer.HANDLER_MICRONAUT_INBOUND, "echo-ownership", new ChannelDuplexHandler() {
++                                @Override
++                                public void channelRead(ChannelHandlerContext ctx, Object message) throws Exception {
++                                    if (message instanceof HttpContent content && content.content().isReadable()) {
++                                        connection.buffers.add(content.content());
++                                        connection.input.countDown();
++                                    }
++                                    super.channelRead(ctx, message);
++                                }
++
++                                @Override
++                                public void write(ChannelHandlerContext ctx, Object message, ChannelPromise promise) throws Exception {
++                                    if (message instanceof HttpContent content && content.content().isReadable()) {
++                                        connection.buffers.add(content.content());
++                                        connection.output.countDown();
++                                    }
++                                    super.write(ctx, message, promise);
++                                }
++                            });
++                        }
++                    };
++                }
++            });
++            EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++            for (boolean fullBody : new boolean[]{false, true}) {
++                try (Socket socket = new Socket()) {
++                    socket.setReceiveBufferSize(1024);
++                    socket.connect(new java.net.InetSocketAddress("localhost", server.getPort()));
++                    Connection connection = connections.poll(5, TimeUnit.SECONDS);
++                    assertNotNull(connection);
++                    socket.setSoLinger(true, 0);
++                    var output = socket.getOutputStream();
++                    output.write("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
++                    output.write(new byte[fullBody ? 1048576 : 8192]);
++                    output.flush();
++                    assertTrue(connection.input.await(5, TimeUnit.SECONDS));
++                    if (fullBody) {
++                        assertTrue(connection.output.await(5, TimeUnit.SECONDS));
++                    }
++                    socket.close();
++                    assertTrue(connection.channel.closeFuture().await(5, TimeUnit.SECONDS));
++                    connection.channel.eventLoop().submit(() -> {}).get(5, TimeUnit.SECONDS);
++                    assertFalse(connection.buffers.isEmpty());
++                    for (ByteBuf buffer : connection.buffers) {
++                        assertEquals(0, buffer.refCnt(), "unreleased native buffer after disconnect, full body: " + fullBody);
++                    }
++                }
++            }
++        }
++    }
++
++    private static final class Connection {
++        final Channel channel;
++        final ConcurrentLinkedQueue<ByteBuf> buffers = new ConcurrentLinkedQueue<>();
++        final CountDownLatch input = new CountDownLatch(1);
++        final CountDownLatch output = new CountDownLatch(1);
++
++        Connection(Channel channel) {
++            this.channel = channel;
++        }
++    }
++}
+-- 
+2.55.0
+
+
+From f000cc0ccc02da0957e958f7d9990743afe44bfe Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:14:08 +0200
+Subject: [PATCH 5/5] Render tuned fortunes directly as UTF-8 bytes
+
+---
+ frameworks/micronaut-tuned/README.md          |   4 +-
+ .../java/httparena/FortunesController.java    |  69 +++++--
+ .../httparena/FortunesControllerTest.java     | 175 +++++++++++++++++-
+ 3 files changed, 224 insertions(+), 24 deletions(-)
+
+diff --git a/frameworks/micronaut-tuned/README.md b/frameworks/micronaut-tuned/README.md
+index ffa435c4..a254ed9f 100644
+--- a/frameworks/micronaut-tuned/README.md
++++ b/frameworks/micronaut-tuned/README.md
+@@ -25,7 +25,7 @@ Dataset loading, PostgreSQL JSON tags and JSON responses use Micronaut Serializa
+ | `/static/{name}` | GET | Files from `/data/static`; a `.br` or `.gz` twin is sent as is when the client accepts it |
+ | `/ws` | WebSocket | Echoes every text and binary frame |
+ | `/async-db?min=10&max=50&limit=20` | GET | Async PostgreSQL range query; limits are clamped to 1–50 |
+-| `/fortunes` | GET | Queries and sorts the rows, then emits escaped HTML with bulk appends of unchanged text |
++| `/fortunes` | GET | Queries and sorts the rows, then writes escaped HTML directly as UTF-8 into a temporary heap buffer |
+ 
+ ## Ports
+ 
+@@ -42,3 +42,5 @@ HTTP/2 is switched on for the whole server (`micronaut.server.http-version=2.0`)
+ Run `mvn verify` on JDK 27 for the serialization and escaping checks. The Docker build runs these tests too; the repository's `scripts/validate.sh micronaut-tuned` covers the HTTP contracts against PostgreSQL.
+ 
+ The PostgreSQL pool caches prepared statements; item and fortune rows are fetched again on every request.
++
++Fortunes keeps its `byte[]` response body. The UTF-8 renderer copies the completed output once and releases its temporary buffer; it does not build a whole-page character buffer or cache encoded messages. HTML escaping and malformed UTF-16 replacement match the previous Java UTF-8 encoding.
+diff --git a/frameworks/micronaut-tuned/src/main/java/httparena/FortunesController.java b/frameworks/micronaut-tuned/src/main/java/httparena/FortunesController.java
+index a7c3935c..58446974 100644
+--- a/frameworks/micronaut-tuned/src/main/java/httparena/FortunesController.java
++++ b/frameworks/micronaut-tuned/src/main/java/httparena/FortunesController.java
+@@ -1,18 +1,19 @@
+ package httparena;
+ 
+-import java.nio.charset.StandardCharsets;
+ import java.util.ArrayList;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.concurrent.CompletableFuture;
+ 
+-import io.micronaut.http.MediaType;
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.ByteBufUtil;
++import io.netty.buffer.Unpooled;
+ import io.vertx.sqlclient.Pool;
+ import io.vertx.sqlclient.Row;
+ 
+-/** GET /fortunes: the page is emitted with a StringBuilder, escaping every message. */
++/** GET /fortunes: the page is emitted directly as UTF-8, escaping every message. */
+ @Controller("/fortunes")
+ public class FortunesController {
+ 
+@@ -38,42 +39,70 @@ public class FortunesController {
+                 result.completeExceptionally(ar.cause());
+                 return;
+             }
+-            List<Fortune> fortunes = new ArrayList<>(ar.result().size() + 1);
+-            for (Row row : ar.result()) {
+-                fortunes.add(new Fortune(row.getInteger("id"), row.getString("message")));
++            try {
++                List<Fortune> fortunes = new ArrayList<>(ar.result().size() + 1);
++                for (Row row : ar.result()) {
++                    fortunes.add(new Fortune(row.getInteger("id"), row.getString("message")));
++                }
++                fortunes.add(new Fortune(0, "Additional fortune added at request time."));
++                fortunes.sort(Comparator.comparing(Fortune::message));
++                result.complete(render(fortunes));
++            } catch (Throwable e) {
++                result.completeExceptionally(e);
+             }
+-            fortunes.add(new Fortune(0, "Additional fortune added at request time."));
+-            fortunes.sort(Comparator.comparing(Fortune::message));
+-            StringBuilder html = new StringBuilder(32 * 1024).append(PAGE_START);
++        });
++        return result;
++    }
++
++    static byte[] render(List<Fortune> fortunes) {
++        ByteBuf html = Unpooled.buffer(32 * 1024);
++        try {
++            ByteBufUtil.writeAscii(html, PAGE_START);
+             for (Fortune f : fortunes) {
+-                html.append("<tr><td>").append(f.id()).append("</td><td>");
++                ByteBufUtil.writeAscii(html, "<tr><td>");
++                ByteBufUtil.writeAscii(html, Integer.toString(f.id()));
++                ByteBufUtil.writeAscii(html, "</td><td>");
+                 escape(html, f.message());
+-                html.append("</td></tr>");
++                ByteBufUtil.writeAscii(html, "</td></tr>");
+             }
+-            result.complete(html.append(PAGE_END).toString().getBytes(StandardCharsets.UTF_8));
+-        });
+-        return result;
++            ByteBufUtil.writeAscii(html, PAGE_END);
++            return ByteBufUtil.getBytes(html);
++        } finally {
++            html.release();
++        }
+     }
+ 
+-    static void escape(StringBuilder out, String text) {
++    static void escape(ByteBuf out, String text) {
+         int start = 0;
+         for (int i = 0; i < text.length(); i++) {
+-            String replacement = switch (text.charAt(i)) {
++            char c = text.charAt(i);
++            String replacement = switch (c) {
+                 case '<' -> "&lt;";
+                 case '>' -> "&gt;";
+                 case '&' -> "&amp;";
+                 case '"' -> "&quot;";
+                 case '\'' -> "&#39;";
+-                default -> null;
++                default -> {
++                    if (Character.isHighSurrogate(c)) {
++                        if (i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
++                            i++;
++                            yield null;
++                        }
++                        yield "?";
++                    }
++                    // Match String.getBytes(UTF_8) for malformed UTF-16 before Netty encodes the span.
++                    yield Character.isLowSurrogate(c) ? "?" : null;
++                }
+             };
+             if (replacement != null) {
+-                out.append(text, start, i).append(replacement);
++                ByteBufUtil.writeUtf8(out, text, start, i);
++                ByteBufUtil.writeAscii(out, replacement);
+                 start = i + 1;
+             }
+         }
+-        out.append(text, start, text.length());
++        ByteBufUtil.writeUtf8(out, text, start, text.length());
+     }
+ 
+-    private record Fortune(int id, String message) {
++    record Fortune(int id, String message) {
+     }
+ }
+diff --git a/frameworks/micronaut-tuned/src/test/java/httparena/FortunesControllerTest.java b/frameworks/micronaut-tuned/src/test/java/httparena/FortunesControllerTest.java
+index 4e35b5e5..8286761c 100644
+--- a/frameworks/micronaut-tuned/src/test/java/httparena/FortunesControllerTest.java
++++ b/frameworks/micronaut-tuned/src/test/java/httparena/FortunesControllerTest.java
+@@ -1,8 +1,31 @@
+ package httparena;
+ 
++import java.lang.reflect.InvocationHandler;
++import java.lang.reflect.Proxy;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
++import java.util.Random;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionException;
++
++import io.netty.buffer.ByteBuf;
++import io.netty.buffer.ByteBufUtil;
++import io.netty.buffer.Unpooled;
++import io.vertx.core.Promise;
++import io.vertx.sqlclient.Pool;
++import io.vertx.sqlclient.PreparedQuery;
++import io.vertx.sqlclient.Row;
++import io.vertx.sqlclient.RowIterator;
++import io.vertx.sqlclient.RowSet;
+ import org.junit.jupiter.api.Test;
+ 
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
+ 
+ class FortunesControllerTest {
+     @Test
+@@ -15,9 +38,155 @@ class FortunesControllerTest {
+         assertEscaped("&&tail&", "&amp;&amp;tail&amp;");
+     }
+ 
++    @Test
++    void matchesJdkEncodingForEveryUtf16CodeUnitAndMalformedSurrogateSequence() {
++        StringBuilder all = new StringBuilder();
++        for (int c = 0; c <= Character.MAX_VALUE; c++) {
++            all.append((char) c).append('x');
++        }
++        assertMatchesLegacy(all.toString());
++        assertMatchesLegacy("\ud800\ud800\udc00\ud800日本語\udc00<&>\"'\ud800");
++        Random random = new Random(42);
++        for (int n = 0; n < 100; n++) {
++            StringBuilder text = new StringBuilder();
++            for (int i = 0; i < 1000; i++) {
++                text.append((char) random.nextInt(Character.MAX_VALUE + 1));
++            }
++            assertMatchesLegacy(text.toString());
++        }
++    }
++
++    @Test
++    void rendersAllRowsAndCanGrowBeyondInitialCapacity() {
++        List<FortunesController.Fortune> rows = new ArrayList<>();
++        for (int id = 1; id <= 200; id++) {
++            rows.add(new FortunesController.Fortune(id, "日本語 😀 <&>\"' ".repeat(30) + id));
++        }
++        rows.add(new FortunesController.Fortune(0, "Additional fortune added at request time."));
++        rows.sort(Comparator.comparing(FortunesController.Fortune::message));
++        byte[] output = FortunesController.render(rows);
++        String html = new String(output, StandardCharsets.UTF_8);
++        assertTrue(output.length > 32 * 1024);
++        assertTrue(html.startsWith("<!DOCTYPE html>"));
++        assertTrue(html.endsWith("</table></body></html>"));
++        assertEquals(201, html.split("<tr><td>", -1).length - 1);
++        assertTrue(html.contains("<td>0</td><td>Additional fortune added at request time.</td>"));
++        for (FortunesController.Fortune row : rows) {
++            assertTrue(html.contains("<td>" + row.id() + "</td><td>" + legacyEscape(row.message()) + "</td>"));
++        }
++    }
++
++    @Test
++    void queriesFreshRowsSortsAndAddsRuntimeFortune() {
++        try (QueryFixture fixture = new QueryFixture()) {
++            for (int request = 0; request < 2; request++) {
++                CompletableFuture<byte[]> response = fixture.controller.fortunes();
++                List<Row> rows = new ArrayList<>();
++                for (int id = 1; id <= 200; id++) {
++                    int rowId = id;
++                    String message = (201 - id) + " request " + request + " <&>\"' 😀";
++                    rows.add(proxy(Row.class, (p, method, args) -> switch (method.getName()) {
++                        case "getInteger" -> rowId;
++                        case "getString" -> message;
++                        default -> throw new AssertionError(method);
++                    }));
++                }
++                fixture.pending.complete(rowSet(rows));
++                String html = new String(response.join(), StandardCharsets.UTF_8);
++                assertEquals(201, html.split("<tr><td>", -1).length - 1);
++                assertTrue(html.contains("<td>0</td><td>Additional fortune added at request time.</td>"));
++                assertTrue(html.indexOf("<td>200</td>") < html.indexOf("<td>199</td>"));
++                assertTrue(html.contains("request " + request + " &lt;&amp;&gt;&quot;&#39; 😀"));
++            }
++            assertEquals(2, fixture.queries);
++        }
++    }
++
++    @Test
++    void propagatesQueryFailuresAndAcceptsCancellationBeforeRowsArrive() {
++        try (QueryFixture fixture = new QueryFixture()) {
++            CompletableFuture<byte[]> failed = fixture.controller.fortunes();
++            RuntimeException cause = new RuntimeException("query failed");
++            fixture.pending.fail(cause);
++            assertSame(cause, assertThrows(CompletionException.class, failed::join).getCause());
++
++            CompletableFuture<byte[]> cancelled = fixture.controller.fortunes();
++            assertTrue(cancelled.cancel(false));
++            fixture.pending.complete(rowSet(List.of()));
++            assertTrue(cancelled.isCancelled());
++        }
++    }
++
++    private static <T> T proxy(Class<T> type, InvocationHandler handler) {
++        return type.cast(Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type}, handler));
++    }
++
++    @SuppressWarnings("unchecked")
++    private static RowSet<Row> rowSet(List<Row> rows) {
++        return proxy(RowSet.class, (p, method, args) -> switch (method.getName()) {
++            case "size" -> rows.size();
++            case "iterator" -> {
++                var iterator = rows.iterator();
++                yield proxy(RowIterator.class, (i, m, a) -> switch (m.getName()) {
++                    case "hasNext" -> iterator.hasNext();
++                    case "next" -> iterator.next();
++                    default -> throw new AssertionError(m);
++                });
++            }
++            default -> throw new AssertionError(method);
++        });
++    }
++
++    private static final class QueryFixture implements AutoCloseable {
++        private Promise<RowSet<Row>> pending;
++        private int queries;
++        private final Pool pool = proxy(Pool.class, (p, method, args) -> {
++            assertEquals("preparedQuery", method.getName());
++            assertEquals("SELECT id, message FROM fortune", args[0]);
++            queries++;
++            return proxy(PreparedQuery.class, (q, queryMethod, queryArgs) -> {
++                assertEquals("execute", queryMethod.getName());
++                pending = Promise.promise();
++                return pending.future();
++            });
++        });
++        private final Database database = new Database() {
++            @Override
++            Pool pool() {
++                return pool;
++            }
++        };
++        private final FortunesController controller = new FortunesController(database);
++
++        @Override
++        public void close() {
++            database.close();
++        }
++    }
++
++    private static void assertMatchesLegacy(String input) {
++        ByteBuf output = Unpooled.buffer();
++        try {
++            FortunesController.escape(output, input);
++            assertArrayEquals(legacyEscape(input).getBytes(StandardCharsets.UTF_8), ByteBufUtil.getBytes(output));
++        } finally {
++            output.release();
++        }
++    }
++
++    private static String legacyEscape(String input) {
++        return input.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
++                .replace("\"", "&quot;").replace("'", "&#39;");
++    }
++
+     private static void assertEscaped(String input, String expected) {
+-        StringBuilder output = new StringBuilder("prefix:");
+-        FortunesController.escape(output, input);
+-        assertEquals("prefix:" + expected, output.toString());
++        ByteBuf output = Unpooled.buffer();
++        try {
++            ByteBufUtil.writeAscii(output, "prefix:");
++            FortunesController.escape(output, input);
++            assertEquals("prefix:" + expected, output.toString(StandardCharsets.UTF_8));
++        } finally {
++            output.release();
++        }
+     }
+ }
+-- 
+2.55.0
+

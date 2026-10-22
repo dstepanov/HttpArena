@@ -1,0 +1,2075 @@
+From 9dab68426b18caa25b44f6711bae5230589c1779 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 13:41:22 +0200
+Subject: [PATCH 1/8] Handle HTTP/2 transport closure at write promises
+
+---
+ .../netty/handler/Http2ServerHandler.java     |   8 +-
+ .../handler/MultiplexedServerHandler.java     |  30 +++-
+ .../handler/Http2WriteFailureSpec.groovy      | 141 ++++++++++++++++++
+ 3 files changed, 169 insertions(+), 10 deletions(-)
+ create mode 100644 http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy
+
+diff --git a/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/Http2ServerHandler.java b/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/Http2ServerHandler.java
+index 8aac798de9..f0a3429ed7 100644
+--- a/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/Http2ServerHandler.java
++++ b/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/Http2ServerHandler.java
+@@ -518,13 +518,13 @@ public final class Http2ServerHandler extends MultiplexedServerHandler implement
+         @Override
+         boolean reset(Throwable cause) {
+             if (cause instanceof Http2Exception h2e) {
+-                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), h2e.error().code(), requiredCtx().voidPromise());
++                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), h2e.error().code(), writePromise());
+                 return true;
+             } else if (cause instanceof ByteBody.BodyDiscardedException) {
+-                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), Http2Error.CANCEL.code(), requiredCtx().voidPromise());
++                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), Http2Error.CANCEL.code(), writePromise());
+                 return true;
+             } else {
+-                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), Http2Error.INTERNAL_ERROR.code(), requiredCtx().voidPromise());
++                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), Http2Error.INTERNAL_ERROR.code(), writePromise());
+                 return false;
+             }
+         }
+@@ -542,7 +542,7 @@ public final class Http2ServerHandler extends MultiplexedServerHandler implement
+                 // RFC 9113 §8.1 allows us to stop reading it, but the response was delivered in
+                 // full, so this is not an error: NO_ERROR keeps clients from reporting the request
+                 // as failed. Genuine cancellation is signalled with CANCEL in reset(Throwable).
+-                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), Http2Error.NO_ERROR.code(), requiredCtx().voidPromise());
++                requiredConnectionHandler().encoder().writeRstStream(requiredCtx(), stream.id(), Http2Error.NO_ERROR.code(), writePromise());
+                 flush();
+             }
+         }
+diff --git a/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java b/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java
+index ad17dffcf8..e078995775 100644
+--- a/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java
++++ b/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java
+@@ -43,6 +43,7 @@ import org.jspecify.annotations.Nullable;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import java.nio.channels.ClosedChannelException;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Objects;
+@@ -56,6 +57,13 @@ import java.util.OptionalLong;
+  */
+ @Internal
+ abstract class MultiplexedServerHandler {
++    private static final ChannelFutureListener WRITE_FAILURE_LISTENER = future -> {
++        Throwable cause = future.cause();
++        if (cause != null && !(cause instanceof ClosedChannelException)) {
++            future.channel().pipeline().fireExceptionCaught(cause);
++        }
++    };
++
+     final Logger LOG = LoggerFactory.getLogger(getClass());
+ 
+     @Nullable
+@@ -123,6 +131,16 @@ abstract class MultiplexedServerHandler {
+         return Objects.requireNonNull(ctx);
+     }
+ 
++    /**
++     * Handle transport closure at the promise: its failure may arrive after the connection's
++     * pipeline has been removed. The HTTP/2 encoder also unvoids a void promise before writing.
++     *
++     * @return The promise for a write whose result is not otherwise observed
++     */
++    final ChannelPromise writePromise() {
++        return requiredCtx().newPromise().addListener(WRITE_FAILURE_LISTENER);
++    }
++
+     /**
+      * An HTTP/2 or HTTP/3 stream.
+      */
+@@ -570,7 +588,7 @@ abstract class MultiplexedServerHandler {
+                 compressionSession.finish();
+                 ByteBuf compressed = compressionSession.poll();
+                 if (compressed != null) {
+-                    writeData0(compressed, false, requiredCtx().voidPromise());
++                    writeData0(compressed, false, writePromise());
+                 }
+             }
+             writeTrailers(trailers, endPromise(response));
+@@ -634,7 +652,7 @@ abstract class MultiplexedServerHandler {
+                 }
+ 
+                 headersWritten = true;
+-                writeHeaders(response, empty, empty ? endPromise(response) : requiredCtx().voidPromise());
++                writeHeaders(response, empty, empty ? endPromise(response) : writePromise());
+                 owned = null;
+                 if (!empty) {
+                     // bypass writeDataCompressing
+@@ -706,7 +724,7 @@ abstract class MultiplexedServerHandler {
+                     finalWrite = promise;
+                     return promise;
+                 }
+-                return requiredCtx().voidPromise();
++                return writePromise();
+             }
+             ChannelPromise promise = requiredCtx().newPromise();
+             if (record) {
+@@ -720,7 +738,7 @@ abstract class MultiplexedServerHandler {
+                     jfrEvent.populateResponse(response);
+                     jfrEvent.commit();
+                 }
+-            }).addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE);
++            }).addListener(WRITE_FAILURE_LISTENER);
+         }
+ 
+         private void logStreamWriteFailure(Throwable cause) {
+@@ -857,7 +875,7 @@ abstract class MultiplexedServerHandler {
+              * back while reading, so the in-read case is coalesced as before.
+              */
+             private void writeContinue() {
+-                writeHeaders(PipeliningServerHandler.ContinueOutboundHandler.CONTINUE_11, false, requiredCtx().voidPromise());
++                writeHeaders(PipeliningServerHandler.ContinueOutboundHandler.CONTINUE_11, false, writePromise());
+                 flush();
+             }
+ 
+@@ -1022,7 +1040,7 @@ abstract class MultiplexedServerHandler {
+             public void open() {
+                 prepareCompression(response, contentLength);
+                 headersWritten = true;
+-                writeHeaders(response, false, requiredCtx().voidPromise());
++                writeHeaders(response, false, writePromise());
+             }
+ 
+             @Override
+diff --git a/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy b/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy
+new file mode 100644
+index 0000000000..3f43464b24
+--- /dev/null
++++ b/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy
+@@ -0,0 +1,141 @@
++package io.micronaut.http.server.netty.handler
++
++import io.micronaut.http.body.CloseableByteBody
++import io.micronaut.http.netty.body.NettyByteBodyFactory
++import io.micronaut.http.server.netty.EmbeddedTestUtil
++import io.netty.buffer.ByteBuf
++import io.netty.buffer.Unpooled
++import io.netty.channel.ChannelHandlerContext
++import io.netty.channel.ChannelOutboundHandlerAdapter
++import io.netty.channel.ChannelPromise
++import io.netty.channel.embedded.EmbeddedChannel
++import io.netty.handler.codec.http.DefaultHttpResponse
++import io.netty.handler.codec.http.HttpRequest
++import io.netty.handler.codec.http.HttpResponseStatus
++import io.netty.handler.codec.http.HttpVersion
++import io.netty.handler.codec.http2.DefaultHttp2Headers
++import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame
++import io.netty.handler.codec.http2.Http2ChannelDuplexHandler
++import io.netty.handler.codec.http2.Http2FrameCodecBuilder
++import jdk.jfr.Recording
++import jdk.jfr.consumer.RecordingFile
++import spock.lang.Specification
++
++import java.nio.channels.ClosedChannelException
++import java.nio.file.Files
++
++class Http2WriteFailureSpec extends Specification {
++    private static class Client extends Http2ChannelDuplexHandler {
++    }
++
++    def "writes failed after the connection pipeline is removed still report real errors"() {
++        given:
++        def recording = new Recording()
++        if (jfr) {
++            recording.enable(Http2RequestEvent)
++            recording.start()
++        }
++        def eventsFile = Files.createTempFile("http2-write-failure", ".jfr")
++        def server = new EmbeddedChannel()
++        def client = new EmbeddedChannel()
++        EmbeddedTestUtil.connect(server, client)
++        OutboundAccess access = null
++        int responsesWritten = 0
++        boolean record = recordFinalWrite
++        server.pipeline().addLast("http2", new Http2ServerHandler.ConnectionHandlerBuilder(new RequestHandler() {
++            @Override
++            void accept(ChannelHandlerContext ctx, HttpRequest request, CloseableByteBody body, OutboundAccess outboundAccess) {
++                body.close()
++                access = outboundAccess
++                if (record) {
++                    assert outboundAccess.recordFinalWrite()
++                }
++            }
++
++            @Override
++            void responseWritten(Object attachment) {
++                responsesWritten++
++            }
++
++            @Override
++            void handleUnboundError(Throwable cause) {
++                throw new AssertionError(cause)
++            }
++        }).build())
++        def duplex = new Client()
++        client.pipeline().addLast(Http2FrameCodecBuilder.forClient().build(), duplex)
++        def headers = new DefaultHttp2Headers().method("GET").scheme("http").authority("example.com").path("/pending")
++        client.writeOutbound(new DefaultHttp2HeadersFrame(headers, true).stream(duplex.newStream()))
++        EmbeddedTestUtil.advance(server, client)
++
++        List<ByteBuf> pending = []
++        List<ChannelPromise> promises = []
++        def capture = new ChannelOutboundHandlerAdapter() {
++            boolean armed = true
++
++            @Override
++            void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
++                if (armed) {
++                    pending.add((ByteBuf) msg)
++                    promises.add(promise)
++                } else {
++                    ctx.write(msg, promise)
++                }
++            }
++        }
++        server.pipeline().addBefore("http2", "pending-writes", capture)
++        def content = Unpooled.buffer(16).writeZero(bodySize)
++
++        when: "the transport closes before the already submitted writes finish"
++        access.write(new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK), new NettyByteBodyFactory(server).adapt(content))
++        server.runPendingTasks()
++        assert !pending.isEmpty()
++        capture.armed = false
++        server.pipeline().get("http2").gracefulShutdownTimeoutMillis(0)
++        server.close()
++        EmbeddedTestUtil.advance(server, client)
++        assert server.pipeline().context("http2") == null
++        pending.each { it.release() }
++        promises.each { it.tryFailure(failure) }
++        server.runPendingTasks()
++        Throwable observedFailure = null
++        try {
++            server.checkException()
++        } catch (Throwable t) {
++            observedFailure = t
++        }
++
++        then:
++        responsesWritten == 1
++        content.refCnt() == 0
++        !recordFinalWrite || access.finalWrite().cause().is(failure)
++        failure instanceof ClosedChannelException ? observedFailure == null : observedFailure.is(failure)
++
++        when:
++        if (jfr) {
++            recording.stop()
++            recording.dump(eventsFile)
++        }
++
++        then: "the final write still completes the request event"
++        !jfr || RecordingFile.readAllEvents(eventsFile).findAll { it.eventType.name == Http2RequestEvent.name && it.getString("uri") == "/pending" }.size() == 1
++
++        cleanup:
++        recording.close()
++        Files.deleteIfExists(eventsFile)
++        pending.each { if (it.refCnt() > 0) it.release() }
++        client.finishAndReleaseAll()
++        server.finishAndReleaseAll()
++
++        where:
++        jfr   | recordFinalWrite | bodySize | failure
++        false | false            | 16       | new ClosedChannelException()
++        false | true             | 16       | new ClosedChannelException()
++        true  | false            | 16       | new ClosedChannelException()
++        true  | true             | 16       | new ClosedChannelException()
++        false | false            | 0        | new ClosedChannelException()
++        true  | false            | 0        | new ClosedChannelException()
++        false | false            | 16       | new IOException("real transport failure")
++        true  | false            | 16       | new IOException("real transport failure")
++    }
++}
+-- 
+2.55.0
+
+
+From 7df2ab021494c74c35f488e2facc2f24ba8ba290 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 13:44:14 +0200
+Subject: [PATCH 2/8] Read file bodies into native buffers without byte array
+ staging
+
+---
+ .../body/stream/InputStreamBodyBenchmark.java |  34 +++-
+ .../server/body/SystemFileBodyWriter.java     |  66 ++++++-
+ .../body/SystemFileBodyWriterSpec.groovy      |  91 +++++++++
+ .../http/body/stream/ExtendedInputStream.java |  45 ++++-
+ .../http/body/stream/InputStreamByteBody.java |  61 ++++--
+ .../stream/InputStreamByteBodySpec.groovy     | 179 ++++++++++++++++++
+ 6 files changed, 451 insertions(+), 25 deletions(-)
+ create mode 100644 http-server/src/test/groovy/io/micronaut/http/server/body/SystemFileBodyWriterSpec.groovy
+
+diff --git a/benchmarks/src/jmh/java/io/micronaut/http/body/stream/InputStreamBodyBenchmark.java b/benchmarks/src/jmh/java/io/micronaut/http/body/stream/InputStreamBodyBenchmark.java
+index a21ca1ede7..1d5ebad1e3 100644
+--- a/benchmarks/src/jmh/java/io/micronaut/http/body/stream/InputStreamBodyBenchmark.java
++++ b/benchmarks/src/jmh/java/io/micronaut/http/body/stream/InputStreamBodyBenchmark.java
+@@ -1,6 +1,8 @@
+ package io.micronaut.http.body.stream;
+ 
+ import io.micronaut.buffer.netty.NettyByteBufferFactory;
++import io.micronaut.buffer.netty.NettyReadBufferFactory;
++import io.netty.buffer.PooledByteBufAllocator;
+ import io.micronaut.core.io.buffer.ReadBuffer;
+ import io.micronaut.http.body.ByteBodyFactory;
+ import org.jspecify.annotations.Nullable;
+@@ -15,11 +17,16 @@ import org.openjdk.jmh.annotations.Scope;
+ import org.openjdk.jmh.annotations.Setup;
+ import org.openjdk.jmh.annotations.State;
+ import org.openjdk.jmh.annotations.Warmup;
++import org.openjdk.jmh.annotations.TearDown;
+ import org.reactivestreams.Subscriber;
+ import org.reactivestreams.Subscription;
+ 
+ import java.io.ByteArrayInputStream;
+ import java.io.InputStream;
++import java.io.FileInputStream;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
+ import java.util.OptionalLong;
+ import java.util.concurrent.TimeUnit;
+ 
+@@ -36,26 +43,43 @@ import java.util.concurrent.TimeUnit;
+ @Fork(1)
+ public class InputStreamBodyBenchmark {
+ 
+-    @Param({"1048576"})
++    @Param({"8192", "1048576"})
+     int size;
+ 
+     @Param({"8192"})
+     int chunk;
+ 
+-    private final ByteBodyFactory factory = ByteBodyFactory.createDefault(NettyByteBufferFactory.DEFAULT);
++    @Param({"stream", "file"})
++    String source;
++
++    @Param({"jdk", "pooled"})
++    String buffers;
++
++    private ByteBodyFactory factory;
++    private Path file;
+     private byte[] bytes;
+ 
+     @Setup
+-    public void setup() {
++    public void setup() throws IOException {
++        factory = buffers.equals("pooled") ?
++            new ByteBodyFactory(NettyByteBufferFactory.DEFAULT, NettyReadBufferFactory.of(PooledByteBufAllocator.DEFAULT)) { } :
++            ByteBodyFactory.createDefault(NettyByteBufferFactory.DEFAULT);
+         bytes = new byte[size];
++        file = Files.createTempFile("input-stream-benchmark", ".bin");
++        Files.write(file, bytes);
+         if (read() != size) {
+             throw new IllegalStateException("Not every byte was read");
+         }
+     }
+ 
++    @TearDown
++    public void cleanup() throws IOException {
++        Files.delete(file);
++    }
++
+     @Benchmark
+-    public long read() {
+-        InputStream stream = new ByteArrayInputStream(bytes) {
++    public long read() throws IOException {
++        InputStream stream = source.equals("file") ? new FileInputStream(file.toFile()) : new ByteArrayInputStream(bytes) {
+             @Override
+             public synchronized int read(byte[] b, int off, int len) {
+                 return super.read(b, off, Math.min(len, chunk));
+diff --git a/http-server/src/main/java/io/micronaut/http/server/body/SystemFileBodyWriter.java b/http-server/src/main/java/io/micronaut/http/server/body/SystemFileBodyWriter.java
+index 2a686c8ecb..1b228793d5 100644
+--- a/http-server/src/main/java/io/micronaut/http/server/body/SystemFileBodyWriter.java
++++ b/http-server/src/main/java/io/micronaut/http/server/body/SystemFileBodyWriter.java
+@@ -17,7 +17,6 @@ package io.micronaut.http.server.body;
+ 
+ import io.micronaut.core.annotation.Experimental;
+ import io.micronaut.core.annotation.Internal;
+-import org.jspecify.annotations.Nullable;
+ import io.micronaut.core.type.Argument;
+ import io.micronaut.core.type.MutableHeaders;
+ import io.micronaut.http.ByteBodyHttpResponse;
+@@ -40,6 +39,7 @@ import io.micronaut.http.server.types.files.SystemFile;
+ import io.micronaut.scheduling.TaskExecutors;
+ import jakarta.inject.Named;
+ import jakarta.inject.Singleton;
++import org.jspecify.annotations.Nullable;
+ 
+ import java.io.EOFException;
+ import java.io.File;
+@@ -48,6 +48,9 @@ import java.io.FileNotFoundException;
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.io.OutputStream;
++import java.nio.ByteBuffer;
++import java.nio.channels.ScatteringByteChannel;
++import java.util.Objects;
+ import java.util.OptionalLong;
+ import java.util.concurrent.ExecutorService;
+ 
+@@ -136,7 +139,7 @@ public final class SystemFileBodyWriter extends AbstractFileBodyWriter implement
+             }
+ 
+             File file = systemFile.getFile();
+-            InputStream is;
++            FileInputStream is;
+             try {
+                 is = new FileInputStream(file);
+             } catch (FileNotFoundException e) {
+@@ -217,14 +220,14 @@ public final class SystemFileBodyWriter extends AbstractFileBodyWriter implement
+         }
+     }
+ 
+-    private static final class RangeInputStream extends InputStream {
+-        private final InputStream delegate;
++    private static final class RangeInputStream extends InputStream implements ScatteringByteChannel {
++        private final FileInputStream delegate;
+         private final long toSkip;
+         private long remainingLength;
+         private boolean skipped = false;
+         private boolean skipSuccess = false;
+ 
+-        private RangeInputStream(InputStream delegate, long toSkip, long length) {
++        private RangeInputStream(FileInputStream delegate, long toSkip, long length) {
+             this.delegate = delegate;
+             this.toSkip = toSkip;
+             this.remainingLength = length;
+@@ -280,6 +283,59 @@ public final class SystemFileBodyWriter extends AbstractFileBodyWriter implement
+             return n;
+         }
+ 
++        @Override
++        public int read(ByteBuffer destination) throws IOException {
++            if (!destination.hasRemaining()) {
++                return 0;
++            }
++            if (!doSkip() || remainingLength <= 0) {
++                return -1;
++            }
++            int limit = destination.limit();
++            try {
++                if (destination.remaining() > remainingLength) {
++                    destination.limit(destination.position() + (int) remainingLength);
++                }
++                int n = delegate.getChannel().read(destination);
++                if (n > 0) {
++                    remainingLength -= n;
++                }
++                return n;
++            } finally {
++                destination.limit(limit);
++            }
++        }
++
++        @Override
++        public long read(ByteBuffer[] destinations, int offset, int length) throws IOException {
++            Objects.checkFromIndexSize(offset, length, destinations.length);
++            long total = 0;
++            for (int i = offset; i < offset + length; i++) {
++                ByteBuffer destination = destinations[i];
++                if (destination.hasRemaining()) {
++                    int n = read(destination);
++                    if (n < 0) {
++                        return total == 0 ? -1 : total;
++                    }
++                    total += n;
++                    if (destination.hasRemaining()) {
++                        break;
++                    }
++                }
++            }
++            return total;
++        }
++
++        @Override
++        public long read(ByteBuffer[] destinations) throws IOException {
++            return read(destinations, 0, destinations.length);
++        }
++
++        @Override
++        public boolean isOpen() {
++            return delegate.getChannel().isOpen();
++        }
++
+         @Override
+         public void close() throws IOException {
+             delegate.close();
+diff --git a/http-server/src/test/groovy/io/micronaut/http/server/body/SystemFileBodyWriterSpec.groovy b/http-server/src/test/groovy/io/micronaut/http/server/body/SystemFileBodyWriterSpec.groovy
+new file mode 100644
+index 0000000000..fce3011d8b
+--- /dev/null
++++ b/http-server/src/test/groovy/io/micronaut/http/server/body/SystemFileBodyWriterSpec.groovy
+@@ -0,0 +1,91 @@
++package io.micronaut.http.server.body
++
++import io.micronaut.core.io.buffer.ByteArrayBufferFactory
++import io.micronaut.core.io.buffer.ReadBuffer
++import io.micronaut.core.io.buffer.ReadBufferFactory
++import io.micronaut.http.HttpRequest
++import io.micronaut.http.HttpResponse
++import io.micronaut.http.body.ByteBodyFactory
++import io.micronaut.http.server.HttpServerConfiguration
++import io.micronaut.http.server.types.files.SystemFile
++import reactor.core.publisher.Flux
++import spock.lang.Specification
++
++import java.nio.channels.ScatteringByteChannel
++import java.nio.file.Files
++import java.util.concurrent.Executors
++
++class SystemFileBodyWriterSpec extends Specification {
++    def "file and range buffers are read on the IO executor through a channel"() {
++        given:
++        def file = Files.createTempFile("system-file-writer", ".bin")
++        byte[] bytes = new byte[20003]
++        new Random(1).nextBytes(bytes)
++        Files.write(file, bytes)
++        def executor = Executors.newSingleThreadExecutor()
++        def caller = Thread.currentThread()
++        ScatteringByteChannel usedChannel = null
++        def factory = new ReadBufferFactory() {
++            @Override
++            ReadBuffer copyOf(ScatteringByteChannel channel, int n) {
++                assert Thread.currentThread() != caller
++                usedChannel = channel
++                return super.copyOf(channel, n)
++            }
++        }
++        def bodyFactory = new ByteBodyFactory(ByteArrayBufferFactory.INSTANCE, factory) {}
++        def writer = new SystemFileBodyWriter(new HttpServerConfiguration.FileTypeHandlerConfiguration(), executor)
++        def request = HttpRequest.GET("/file")
++        if (range != null) {
++            request.header("Range", range)
++        }
++        def systemFile = new SystemFile(file.toFile())
++
++        when:
++        def response = writer.write(bodyFactory, request, HttpResponse.ok(systemFile), systemFile)
++        def output = new ByteArrayOutputStream()
++        Flux.from(response.byteBody().toReadBufferPublisher()).doOnNext { it.transferTo(output) }.blockLast()
++
++        then:
++        response.code() == status
++        output.toByteArray() == Arrays.copyOfRange(bytes, start, end)
++        usedChannel != null
++        !usedChannel.open
++
++        cleanup:
++        executor.shutdown()
++        Files.deleteIfExists(file)
++
++        where:
++        range               | status | start | end
++        null                | 200    | 0     | 20003
++        "bytes=0-0"         | 206    | 0     | 1
++        "bytes=7777-17001"  | 206    | 7777  | 17002
++        "bytes=16384-"      | 206    | 16384 | 20003
++        "bytes=-9000"       | 206    | 11003 | 20003
++    }
++
++    def "file reads see a truncation after the response headers were prepared"() {
++        given:
++        def file = Files.createTempFile("system-file-writer", ".bin")
++        Files.write(file, new byte[10000])
++        def executor = Executors.newSingleThreadExecutor()
++        def writer = new SystemFileBodyWriter(new HttpServerConfiguration.FileTypeHandlerConfiguration(), executor)
++        def bodyFactory = ByteBodyFactory.createDefault(ByteArrayBufferFactory.INSTANCE)
++        def systemFile = new SystemFile(file.toFile())
++        def response = writer.write(bodyFactory, HttpRequest.GET("/file"), HttpResponse.ok(systemFile), systemFile)
++        Files.write(file, [1, 2, 3] as byte[])
++
++        when:
++        def output = new ByteArrayOutputStream()
++        Flux.from(response.byteBody().toReadBufferPublisher()).doOnNext { it.transferTo(output) }.blockLast()
++
++        then:
++        response.byteBody().expectedLength().asLong == 10000
++        output.toByteArray() == [1, 2, 3] as byte[]
++
++        cleanup:
++        executor.shutdown()
++        Files.deleteIfExists(file)
++    }
++}
+diff --git a/http/src/main/java/io/micronaut/http/body/stream/ExtendedInputStream.java b/http/src/main/java/io/micronaut/http/body/stream/ExtendedInputStream.java
+index 663e8bad43..e302c57e1b 100644
+--- a/http/src/main/java/io/micronaut/http/body/stream/ExtendedInputStream.java
++++ b/http/src/main/java/io/micronaut/http/body/stream/ExtendedInputStream.java
+@@ -16,13 +16,17 @@
+ package io.micronaut.http.body.stream;
+ 
+ import io.micronaut.core.annotation.Internal;
+-import org.jspecify.annotations.Nullable;
++import io.micronaut.core.io.buffer.ReadBuffer;
++import io.micronaut.core.io.buffer.ReadBufferFactory;
+ import io.micronaut.http.body.ByteBody;
++import org.jspecify.annotations.Nullable;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import java.io.FileInputStream;
+ import java.io.IOException;
+ import java.io.InputStream;
++import java.nio.channels.ScatteringByteChannel;
+ import java.util.Arrays;
+ import java.util.concurrent.locks.Lock;
+ import java.util.concurrent.locks.ReentrantLock;
+@@ -77,6 +81,18 @@ abstract class ExtendedInputStream extends InputStream {
+         }
+     }
+ 
++    boolean hasChannel() {
++        return false;
++    }
++
++    /**
++     * Read some data directly into a buffer when the underlying stream supports channel reads.
++     */
++    @Nullable ReadBuffer readSome(ReadBufferFactory factory) throws IOException {
++        byte[] bytes = readSome();
++        return bytes == null ? null : factory.adapt(bytes);
++    }
++
+     @Override
+     public void close() {
+         allowDiscard();
+@@ -116,6 +132,33 @@ abstract class ExtendedInputStream extends InputStream {
+             }
+         }
+ 
++        @Override
++        boolean hasChannel() {
++            return delegate instanceof ScatteringByteChannel || delegate.getClass() == FileInputStream.class;
++        }
++
++        @Override
++        @Nullable ReadBuffer readSome(ReadBufferFactory factory) throws IOException {
++            ScatteringByteChannel channel;
++            if (delegate instanceof ScatteringByteChannel scattering) {
++                channel = scattering;
++            } else if (delegate.getClass() == FileInputStream.class) {
++                // A subclass may override read; using its channel would bypass that behavior.
++                channel = ((FileInputStream) delegate).getChannel();
++            } else {
++                return super.readSome(factory);
++            }
++            lock.lock();
++            try {
++                if (discarded) {
++                    throw ByteBody.BodyDiscardedException.create();
++                }
++                return factory.copyOf(channel, CHUNK_SIZE);
++            } finally {
++                lock.unlock();
++            }
++        }
++
+         @Override
+         public void close() {
+             try {
+diff --git a/http/src/main/java/io/micronaut/http/body/stream/InputStreamByteBody.java b/http/src/main/java/io/micronaut/http/body/stream/InputStreamByteBody.java
+index 10fba7c23f..fe9e2e15ae 100644
+--- a/http/src/main/java/io/micronaut/http/body/stream/InputStreamByteBody.java
++++ b/http/src/main/java/io/micronaut/http/body/stream/InputStreamByteBody.java
+@@ -30,6 +30,7 @@ import org.reactivestreams.Subscriber;
+ import org.reactivestreams.Subscription;
+ import reactor.core.publisher.Flux;
+ 
++import java.io.IOException;
+ import java.io.InputStream;
+ import java.util.Objects;
+ import java.util.OptionalLong;
+@@ -136,12 +137,35 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+     @Override
+     public Flux<byte[]> toByteArrayPublisher() {
+         // the declared type of this method is a Flux: the reads run without Reactor
+-        return Flux.from(new StreamPublisher(toInputStream(), context.ioExecutor()));
++        return Flux.from(byteArrayPublisher(toInputStream()));
++    }
++
++    private StreamPublisher<byte[]> byteArrayPublisher(ExtendedInputStream input) {
++        return new StreamPublisher<byte[]>(input, context.ioExecutor()) {
++            @Override
++            byte @Nullable [] readSome() throws IOException {
++                return stream.readSome();
++            }
++        };
+     }
+ 
+     @Override
+     public Publisher<ReadBuffer> toReadBufferPublisher() {
+-        return BodyPublishers.map(new StreamPublisher(toInputStream(), context.ioExecutor()), context.bodyFactory.readBufferFactory()::adapt);
++        ExtendedInputStream input = toInputStream();
++        if (!input.hasChannel()) {
++            return BodyPublishers.map(byteArrayPublisher(input), context.bodyFactory.readBufferFactory()::adapt);
++        }
++        return new StreamPublisher<ReadBuffer>(input, context.ioExecutor()) {
++            @Override
++            @Nullable ReadBuffer readSome() throws IOException {
++                return stream.readSome(context.bodyFactory.readBufferFactory());
++            }
++
++            @Override
++            void discard(ReadBuffer buffer) {
++                buffer.close();
++            }
++        };
+     }
+ 
+     @Override
+@@ -163,12 +187,14 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+ 
+     /**
+      * Reads the stream on the IO executor as the bytes are requested, one read per requested
+-     * array, and closes the stream when it ends, fails or is cancelled.
++     * item, and closes the stream when it ends, fails or is cancelled.
++     *
++     * @param <T> The published buffer type
+      */
+-    private static final class StreamPublisher implements Publisher<byte[]>, Subscription, Runnable {
+-        private final ExtendedInputStream stream;
++    private abstract static class StreamPublisher<T> implements Publisher<T>, Subscription, Runnable {
++        final ExtendedInputStream stream;
+         private final Executor executor;
+-        private @Nullable Subscriber<? super byte[]> subscriber;
++        private @Nullable Subscriber<? super T> subscriber;
+ 
+         // guarded by this
+         private long demand;
+@@ -179,7 +205,7 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+         private boolean cancelled;
+         private boolean done;
+         /**
+-         * The failure of a request for no arrays, delivered by the read task.
++         * The failure of a request for no items, delivered by the read task.
+          */
+         private @Nullable Throwable badRequest;
+ 
+@@ -188,8 +214,13 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+             this.executor = executor;
+         }
+ 
++        abstract @Nullable T readSome() throws IOException;
++
++        void discard(T item) {
++        }
++
+         @Override
+-        public void subscribe(Subscriber<? super byte[]> s) {
++        public void subscribe(Subscriber<? super T> s) {
+             synchronized (this) {
+                 if (subscriber != null) {
+                     BodyPublishers.reject(s, "The bytes of a stream are published to a single subscriber");
+@@ -233,7 +264,7 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+ 
+         @Override
+         public void run() {
+-            Subscriber<? super byte[]> s = Objects.requireNonNull(subscriber);
++            Subscriber<? super T> s = Objects.requireNonNull(subscriber);
+             while (true) {
+                 Throwable bad;
+                 synchronized (this) {
+@@ -257,9 +288,9 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+                     s.onError(bad);
+                     return;
+                 }
+-                byte @Nullable [] bytes;
++                T item;
+                 try {
+-                    bytes = stream.readSome();
++                    item = readSome();
+                 } catch (Throwable e) {
+                     synchronized (this) {
+                         if (cancelled) {
+@@ -271,7 +302,7 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+                     s.onError(e);
+                     return;
+                 }
+-                if (bytes == null) {
++                if (item == null) {
+                     synchronized (this) {
+                         if (cancelled) {
+                             reading = false;
+@@ -284,15 +315,17 @@ public final class InputStreamByteBody extends InternalByteBody implements Close
+                 }
+                 synchronized (this) {
+                     if (cancelled) {
+-                        // cancelled while the array was read: it is not delivered
++                        // cancelled while the item was read: release it without delivery
++                        discard(item);
+                         reading = false;
+                         break;
+                     }
+                 }
+                 try {
+-                    s.onNext(bytes);
++                    s.onNext(item);
+                 } catch (Throwable e) {
+                     // a subscriber that throws is cancelled (rule 2.13)
++                    discard(item);
+                     synchronized (this) {
+                         cancelled = true;
+                         reading = false;
+diff --git a/http/src/test/groovy/io/micronaut/http/body/stream/InputStreamByteBodySpec.groovy b/http/src/test/groovy/io/micronaut/http/body/stream/InputStreamByteBodySpec.groovy
+index 70fa7ef8a2..5ff079241b 100644
+--- a/http/src/test/groovy/io/micronaut/http/body/stream/InputStreamByteBodySpec.groovy
++++ b/http/src/test/groovy/io/micronaut/http/body/stream/InputStreamByteBodySpec.groovy
+@@ -2,12 +2,15 @@ package io.micronaut.http.body.stream
+ 
+ import io.micronaut.core.io.buffer.ByteArrayBufferFactory
+ import io.micronaut.http.body.ByteBodyFactory
++import io.micronaut.core.io.buffer.ReadBufferFactory
+ import io.micronaut.core.io.buffer.ReadBuffer
+ import org.reactivestreams.Subscriber
+ import org.reactivestreams.Subscription
+ import spock.lang.Specification
+ 
+ import java.nio.charset.StandardCharsets
++import java.nio.channels.ScatteringByteChannel
++import java.nio.file.Files
+ import java.util.concurrent.CopyOnWriteArrayList
+ import java.util.concurrent.CountDownLatch
+ import java.util.concurrent.Executors
+@@ -174,6 +177,182 @@ class InputStreamByteBodySpec extends Specification {
+         closed.count == 0
+     }
+ 
++    def "file buffers use channel reads only when requested and do not truncate to the expected length"() {
++        given:
++        def file = Files.createTempFile("input-stream-body", ".bin")
++        byte[] bytes = new byte[20003]
++        new Random(1).nextBytes(bytes)
++        Files.write(file, bytes)
++        def stream = new FileInputStream(file.toFile())
++        def tasks = []
++        int reads = 0
++        def factory = new ReadBufferFactory() {
++            @Override
++            ReadBuffer copyOf(ScatteringByteChannel channel, int n) {
++                reads++
++                return super.copyOf(channel, n)
++            }
++        }
++        def bodyFactory = new ByteBodyFactory(ByteArrayBufferFactory.INSTANCE, factory) {}
++        def body = InputStreamByteBody.create(stream, OptionalLong.of(expectedLength), { tasks.add(it) }, bodyFactory)
++        def received = []
++        Subscription subscription = null
++        body.toReadBufferPublisher().subscribe(recorder(received, { subscription = it }))
++
++        when:
++        subscription.request(1)
++
++        then:
++        reads == 0
++        tasks.size() == 1
++        received.empty
++
++        when:
++        tasks.remove(0).run()
++
++        then:
++        reads == 1
++        received.size() == 1
++        received[0].readable() == 8192
++        stream.channel.open
++        tasks.empty
++
++        when:
++        subscription.request(Long.MAX_VALUE)
++        tasks.remove(0).run()
++        def output = new ByteArrayOutputStream()
++        received.findAll { it instanceof ReadBuffer }.each { it.transferTo(output) }
++
++        then:
++        reads == 4
++        received.last() == "complete"
++        output.toByteArray() == bytes
++        !stream.channel.open
++
++        cleanup:
++        stream.close()
++        Files.deleteIfExists(file)
++
++        where:
++        expectedLength << [1L, 40000L]
++    }
++
++    def "a file buffer obtained during cancellation is released"() {
++        given:
++        def file = Files.createTempFile("input-stream-body", ".bin")
++        Files.write(file, new byte[1])
++        def stream = new FileInputStream(file.toFile())
++        Subscription subscription = null
++        ReadBuffer obtained = null
++        def factory = new ReadBufferFactory() {
++            @Override
++            ReadBuffer copyOf(ScatteringByteChannel channel, int n) {
++                obtained = super.copyOf(channel, n)
++                subscription.cancel()
++                return obtained
++            }
++        }
++        def bodyFactory = new ByteBodyFactory(ByteArrayBufferFactory.INSTANCE, factory) {}
++        def body = InputStreamByteBody.create(stream, OptionalLong.empty(), Runnable::run, bodyFactory)
++        def received = []
++        body.toReadBufferPublisher().subscribe(recorder(received, { subscription = it }))
++
++        when:
++        subscription.request(1)
++
++        then:
++        received.empty
++        !stream.channel.open
++
++        when:
++        obtained.readable()
++
++        then:
++        thrown(IllegalStateException)
++
++        cleanup:
++        stream.close()
++        Files.deleteIfExists(file)
++    }
++
++    def "a FileInputStream subclass keeps its read overrides"() {
++        given:
++        def file = Files.createTempFile("input-stream-body", ".bin")
++        Files.write(file, [1, 2, 3] as byte[])
++        def stream = new FileInputStream(file.toFile()) {
++            @Override
++            int read(byte[] bytes, int offset, int length) {
++                int n = super.read(bytes, offset, length)
++                for (int i = 0; i < n; i++) {
++                    bytes[offset + i]++
++                }
++                return n
++            }
++        }
++        def body = InputStreamByteBody.create(stream, OptionalLong.empty(), Runnable::run, ByteBodyFactory.createDefault(ByteArrayBufferFactory.INSTANCE))
++
++        expect:
++        reactor.core.publisher.Flux.from(body.toReadBufferPublisher()).map { it.toArray() }.collectList().block() == [[2, 3, 4] as byte[]]
++
++        cleanup:
++        stream.close()
++        Files.deleteIfExists(file)
++    }
++
++    def "a subscriber throwing from onNext releases a file buffer even if it already consumed it"() {
++        given:
++        def file = Files.createTempFile("input-stream-body", ".bin")
++        Files.write(file, new byte[1])
++        def stream = new FileInputStream(file.toFile())
++        def body = InputStreamByteBody.create(stream, OptionalLong.empty(), Runnable::run, ByteBodyFactory.createDefault(ByteArrayBufferFactory.INSTANCE))
++        ReadBuffer obtained = null
++        def events = []
++
++        when:
++        body.toReadBufferPublisher().subscribe(new Subscriber<ReadBuffer>() {
++            @Override
++            void onSubscribe(Subscription subscription) {
++                subscription.request(Long.MAX_VALUE)
++            }
++
++            @Override
++            void onNext(ReadBuffer buffer) {
++                obtained = buffer
++                if (consumeFirst) {
++                    buffer.toArray()
++                }
++                throw new IllegalStateException("subscriber failure")
++            }
++
++            @Override
++            void onError(Throwable failure) {
++                events.add(failure)
++            }
++
++            @Override
++            void onComplete() {
++                events.add("complete")
++            }
++        })
++
++        then:
++        events.empty
++        !stream.channel.open
++
++        when:
++        obtained.readable()
++
++        then:
++        thrown(IllegalStateException)
++
++        cleanup:
++        stream.close()
++        Files.deleteIfExists(file)
++
++        where:
++        consumeFirst << [true, false]
++    }
++
+     private static Subscriber<ReadBuffer> recorder(List<Object> received, Closure onSubscribe) {
+         return new Subscriber<ReadBuffer>() {
+             @Override
+-- 
+2.55.0
+
+
+From 193a2222d28eeeee423da99d437867ae5efce506 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 13:48:50 +0200
+Subject: [PATCH 3/8] Avoid copying freshly decoded Netty query parameter maps
+
+---
+ .../netty/NettyHttpParametersBenchmark.java   |  52 ++++++++
+ .../client/netty/NettyClientHttpRequest.java  |   2 +-
+ .../netty/NettyClientHttpRequestSpec.groovy   |  29 +++++
+ .../http/netty/NettyHttpParameters.java       |  32 ++++-
+ .../http/netty/NettyHttpParametersTest.java   | 113 ++++++++++++++++++
+ .../netty/AbstractNettyHttpRequest.java       |   2 +-
+ .../http/server/netty/NettyHttpRequest.java   |   2 +-
+ ...NettyHttpRequestQueryParametersSpec.groovy |  23 ++++
+ 8 files changed, 250 insertions(+), 5 deletions(-)
+ create mode 100644 benchmarks/src/jmh/java/io/micronaut/http/netty/NettyHttpParametersBenchmark.java
+ create mode 100644 http-netty/src/test/java/io/micronaut/http/netty/NettyHttpParametersTest.java
+
+diff --git a/benchmarks/src/jmh/java/io/micronaut/http/netty/NettyHttpParametersBenchmark.java b/benchmarks/src/jmh/java/io/micronaut/http/netty/NettyHttpParametersBenchmark.java
+new file mode 100644
+index 0000000000..9b77a8d203
+--- /dev/null
++++ b/benchmarks/src/jmh/java/io/micronaut/http/netty/NettyHttpParametersBenchmark.java
+@@ -0,0 +1,52 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package io.micronaut.http.netty;
++
++import io.micronaut.core.convert.ConversionService;
++import io.netty.handler.codec.http.QueryStringDecoder;
++import org.openjdk.jmh.annotations.Benchmark;
++import org.openjdk.jmh.annotations.BenchmarkMode;
++import org.openjdk.jmh.annotations.Fork;
++import org.openjdk.jmh.annotations.Measurement;
++import org.openjdk.jmh.annotations.Mode;
++import org.openjdk.jmh.annotations.OutputTimeUnit;
++import org.openjdk.jmh.annotations.Param;
++import org.openjdk.jmh.annotations.Scope;
++import org.openjdk.jmh.annotations.State;
++import org.openjdk.jmh.annotations.Warmup;
++
++import java.util.concurrent.TimeUnit;
++
++@State(Scope.Thread)
++@BenchmarkMode(Mode.AverageTime)
++@OutputTimeUnit(TimeUnit.NANOSECONDS)
++@Warmup(iterations = 5, time = 1)
++@Measurement(iterations = 5, time = 1)
++@Fork(3)
++public class NettyHttpParametersBenchmark {
++    @Param({"/baseline11", "/baseline11?a=123&b=456", "/p?a=1&a=2&b=x%2By&c=%E2%82%AC&d=4&e=5&f=6&g=7&h=8"})
++    public String uri;
++
++    @Benchmark
++    public NettyHttpParameters copiedDecoderParameters() {
++        return new NettyHttpParameters(new QueryStringDecoder(uri).parameters(), ConversionService.SHARED, null);
++    }
++
++    @Benchmark
++    public NettyHttpParameters ownedDecoderParameters() {
++        return NettyHttpParameters.fromDecoder(new QueryStringDecoder(uri), ConversionService.SHARED, null);
++    }
++}
+diff --git a/http-client/src/main/java/io/micronaut/http/client/netty/NettyClientHttpRequest.java b/http-client/src/main/java/io/micronaut/http/client/netty/NettyClientHttpRequest.java
+index b7a8ab655c..b779a441f6 100644
+--- a/http-client/src/main/java/io/micronaut/http/client/netty/NettyClientHttpRequest.java
++++ b/http-client/src/main/java/io/micronaut/http/client/netty/NettyClientHttpRequest.java
+@@ -199,7 +199,7 @@ public class NettyClientHttpRequest<B> implements MutableHttpRequest<B>, NettyHt
+ 
+     private NettyHttpParameters decodeParameters(URI uri) {
+         QueryStringDecoder queryStringDecoder = createDecoder(uri);
+-        return new NettyHttpParameters(queryStringDecoder.parameters(),
++        return NettyHttpParameters.fromDecoder(queryStringDecoder,
+                 conversionService,
+                 (name, value) -> {
+                     UriBuilder newUri = UriBuilder.of(getUri());
+diff --git a/http-client/src/test/groovy/io/micronaut/http/client/netty/NettyClientHttpRequestSpec.groovy b/http-client/src/test/groovy/io/micronaut/http/client/netty/NettyClientHttpRequestSpec.groovy
+index ec85c19fb3..8a05a8c11f 100644
+--- a/http-client/src/test/groovy/io/micronaut/http/client/netty/NettyClientHttpRequestSpec.groovy
++++ b/http-client/src/test/groovy/io/micronaut/http/client/netty/NettyClientHttpRequestSpec.groovy
+@@ -31,6 +31,35 @@ class NettyClientHttpRequestSpec extends Specification {
+         req.uri.toString() == "/foo?param=true&param=false"
+     }
+ 
++    void "adding parameters preserves decoded values and URI updates"() {
++        given:
++        MutableHttpRequest req = new NettyClientHttpRequestFactory().get('/foo?b=x%2By&a=1&a=2')
++        def parameters = req.parameters
++        def originalValues = parameters.getAll('a')
++
++        when:
++        parameters.add('a', '3')
++        parameters.add(new StringBuilder('added'), 'x y')
++
++        then:
++        originalValues == ['1', '2']
++        parameters.getAll('a') == ['1', '2', '3']
++        parameters.names().toList() == ['b', 'a', 'added']
++        req.uri.toString() == '/foo?b=x%2By&a=1&a=2&a=3&added=x+y'
++    }
++
++    void "parameters can be added to an empty query"() {
++        given:
++        MutableHttpRequest req = new NettyClientHttpRequestFactory().get('/foo')
++
++        when:
++        req.parameters.add('a', '1')
++
++        then:
++        req.parameters.getAll('a') == ['1']
++        req.uri.toString() == '/foo?a=1'
++    }
++
+     void "test combination of URI params and request params"() {
+         MutableHttpRequest req = new NettyClientHttpRequestFactory().get("/test-params?param=true")
+         req.getParameters().add("param", "false")
+diff --git a/http-netty/src/main/java/io/micronaut/http/netty/NettyHttpParameters.java b/http-netty/src/main/java/io/micronaut/http/netty/NettyHttpParameters.java
+index 5020f070c2..e409a492e4 100644
+--- a/http-netty/src/main/java/io/micronaut/http/netty/NettyHttpParameters.java
++++ b/http-netty/src/main/java/io/micronaut/http/netty/NettyHttpParameters.java
+@@ -22,11 +22,11 @@ import io.micronaut.core.convert.ConversionService;
+ import io.micronaut.core.convert.value.ConvertibleMultiValuesMap;
+ import io.micronaut.core.util.CollectionUtils;
+ import io.micronaut.http.MutableHttpParameters;
++import io.netty.handler.codec.http.QueryStringDecoder;
+ 
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.Collections;
+-import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Optional;
+@@ -43,7 +43,7 @@ import java.util.stream.Collectors;
+ @Internal
+ public class NettyHttpParameters implements MutableHttpParameters {
+ 
+-    private final LinkedHashMap<CharSequence, List<String>> valuesMap;
++    private final Map<CharSequence, List<String>> valuesMap;
+     private final ConvertibleMultiValuesMap<String> values;
+     @Nullable
+     private final BiConsumer<CharSequence, List<String>> onChange;
+@@ -64,6 +64,34 @@ public class NettyHttpParameters implements MutableHttpParameters {
+         }
+     }
+ 
++    @SuppressWarnings("unchecked")
++    private NettyHttpParameters(QueryStringDecoder decoder,
++                                ConversionService conversionService,
++                                @Nullable BiConsumer<CharSequence, List<String>> onChange) {
++        Map<String, List<String>> parameters = decoder.parameters();
++        // A nonempty decoder map is mutable, and exclusive ownership allows CharSequence keys.
++        this.valuesMap = parameters.isEmpty() ? CollectionUtils.newLinkedHashMap(0) :
++            (Map<CharSequence, List<String>>) (Map<?, ?>) parameters;
++        this.valuesMap.replaceAll((name, value) -> Collections.unmodifiableList(value));
++        this.values = new ConvertibleMultiValuesMap<>(valuesMap, conversionService);
++        this.onChange = onChange;
++    }
++
++    /**
++     * Takes ownership of a fresh decoder's parameters. The decoder and its parameter map must not
++     * be used after this call.
++     *
++     * @param decoder The decoder
++     * @param conversionService The conversion service
++     * @param onChange A callback for changes
++     * @return The parameters
++     */
++    public static NettyHttpParameters fromDecoder(QueryStringDecoder decoder,
++                                                  ConversionService conversionService,
++                                                  @Nullable BiConsumer<CharSequence, List<String>> onChange) {
++        return new NettyHttpParameters(decoder, conversionService, onChange);
++    }
++
+     @Override
+     public Set<String> names() {
+         return values.names();
+diff --git a/http-netty/src/test/java/io/micronaut/http/netty/NettyHttpParametersTest.java b/http-netty/src/test/java/io/micronaut/http/netty/NettyHttpParametersTest.java
+new file mode 100644
+index 0000000000..11dcac7701
+--- /dev/null
++++ b/http-netty/src/test/java/io/micronaut/http/netty/NettyHttpParametersTest.java
+@@ -0,0 +1,113 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package io.micronaut.http.netty;
++
++import io.micronaut.core.convert.ConversionService;
++import io.micronaut.core.convert.DefaultMutableConversionService;
++import io.netty.handler.codec.http.QueryStringDecoder;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++
++import java.nio.CharBuffer;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.function.BiConsumer;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class NettyHttpParametersTest {
++    @ParameterizedTest
++    @ValueSource(booleans = {false, true})
++    void decodingAndMutationPreserveOrderAndImmutableViews(boolean owned) {
++        NettyHttpParameters parameters = parameters("/p?b=2&a=1&a=3&escaped=x%2By%26z&space=x+y", owned, null);
++        assertEquals(List.of("b", "a", "escaped", "space"), new ArrayList<>(parameters.names()));
++        assertEquals(List.of("1", "3"), parameters.getAll("a"));
++        assertEquals("x+y&z", parameters.get("escaped"));
++        assertEquals("x y", parameters.get("space"));
++        Collection<List<String>> values = parameters.values();
++        List<String> original = parameters.getAll("a");
++        assertThrows(UnsupportedOperationException.class, values::clear);
++        assertThrows(UnsupportedOperationException.class, () -> values.iterator().next().add("bad"));
++        assertThrows(UnsupportedOperationException.class, () -> original.add("bad"));
++
++        parameters.add("a", List.of("4"));
++        CharSequence name = CharBuffer.wrap("added");
++        parameters.add(name, List.of("5"));
++        assertEquals(List.of("1", "3"), original);
++        assertEquals(List.of("1", "3", "4"), parameters.getAll("a"));
++        assertEquals(List.of("5"), parameters.getAll(name));
++        assertEquals(List.of("b", "a", "escaped", "space", "added"), new ArrayList<>(parameters.names()));
++        assertEquals(List.of(List.of("2"), List.of("1", "3", "4"), List.of("x+y&z"), List.of("x y"), List.of("5")), new ArrayList<>(values));
++        assertThrows(UnsupportedOperationException.class, () -> parameters.getAll("a").clear());
++    }
++
++    @ParameterizedTest
++    @ValueSource(booleans = {false, true})
++    void emptyParametersCanBeAddedAndNotifyChanges(boolean owned) {
++        List<List<String>> changes = new ArrayList<>();
++        CharSequence name = CharBuffer.wrap("a");
++        NettyHttpParameters parameters = parameters("/p", owned, (key, value) -> {
++            assertSame(name, key);
++            changes.add(value);
++        });
++        assertTrue(parameters.names().isEmpty());
++        parameters.add(name, List.of("1"));
++        parameters.add(name, List.of("2"));
++        assertEquals(List.of(List.of("1"), List.of("1", "2")), changes);
++        assertEquals(List.of("1", "2"), parameters.getAll(name));
++        assertThrows(UnsupportedOperationException.class, () -> changes.getFirst().add("bad"));
++    }
++
++    @ParameterizedTest
++    @ValueSource(booleans = {false, true})
++    void conversionServiceCanBeReplaced(boolean owned) {
++        NettyHttpParameters parameters = parameters("/p?a=42", owned, null);
++        DefaultMutableConversionService service = new DefaultMutableConversionService();
++        parameters.setConversionService(service);
++        assertSame(service, parameters.getConversionService());
++        assertEquals(42, parameters.get("a", Integer.class).orElseThrow());
++    }
++
++    @Test
++    void existingConstructorSnapshotsMapButKeepsListContentsAliased() {
++        List<String> sourceValues = new ArrayList<>(List.of("1"));
++        Map<String, List<String>> source = new LinkedHashMap<>();
++        source.put("a", sourceValues);
++        NettyHttpParameters parameters = new NettyHttpParameters(source, ConversionService.SHARED, null);
++        source.clear();
++        source.put("b", List.of("3"));
++        sourceValues.add("2");
++        assertEquals(List.of("a"), new ArrayList<>(parameters.names()));
++        assertEquals(List.of("1", "2"), parameters.getAll("a"));
++
++        parameters.add("a", List.of("4"));
++        assertEquals(List.of("1", "2"), sourceValues);
++        assertEquals(List.of("1", "2", "4"), parameters.getAll("a"));
++    }
++
++    private static NettyHttpParameters parameters(String uri, boolean owned, BiConsumer<CharSequence, List<String>> onChange) {
++        QueryStringDecoder decoder = new QueryStringDecoder(uri);
++        return owned ? NettyHttpParameters.fromDecoder(decoder, ConversionService.SHARED, onChange) :
++            new NettyHttpParameters(decoder.parameters(), ConversionService.SHARED, onChange);
++    }
++}
+diff --git a/http-server-netty/src/main/java/io/micronaut/http/server/netty/AbstractNettyHttpRequest.java b/http-server-netty/src/main/java/io/micronaut/http/server/netty/AbstractNettyHttpRequest.java
+index 6a131eb954..340d96961d 100644
+--- a/http-server-netty/src/main/java/io/micronaut/http/server/netty/AbstractNettyHttpRequest.java
++++ b/http-server-netty/src/main/java/io/micronaut/http/server/netty/AbstractNettyHttpRequest.java
+@@ -241,7 +241,7 @@ public abstract class AbstractNettyHttpRequest<B> extends DefaultAttributeMap im
+         } else {
+             queryStringDecoder = createDecoder(getUri());
+         }
+-        return new NettyHttpParameters(queryStringDecoder.parameters(), conversionService, null);
++        return NettyHttpParameters.fromDecoder(queryStringDecoder, conversionService, null);
+     }
+ 
+     @Override
+diff --git a/http-server-netty/src/main/java/io/micronaut/http/server/netty/NettyHttpRequest.java b/http-server-netty/src/main/java/io/micronaut/http/server/netty/NettyHttpRequest.java
+index 9db5142ac2..cf24f90067 100644
+--- a/http-server-netty/src/main/java/io/micronaut/http/server/netty/NettyHttpRequest.java
++++ b/http-server-netty/src/main/java/io/micronaut/http/server/netty/NettyHttpRequest.java
+@@ -1323,7 +1323,7 @@ public final class NettyHttpRequest<T> extends AbstractNettyHttpRequest<T> imple
+                     httpParameters = this.httpParameters;
+                     if (httpParameters == null) {
+                         QueryStringDecoder queryStringDecoder = createDecoder(getUri());
+-                        httpParameters = new NettyHttpParameters(queryStringDecoder.parameters(), conversionService, null);
++                        httpParameters = NettyHttpParameters.fromDecoder(queryStringDecoder, conversionService, null);
+                         this.httpParameters = httpParameters;
+                     }
+                 }
+diff --git a/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/binding/NettyHttpRequestQueryParametersSpec.groovy b/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/binding/NettyHttpRequestQueryParametersSpec.groovy
+index 365fff1930..1ca9cd3800 100644
+--- a/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/binding/NettyHttpRequestQueryParametersSpec.groovy
++++ b/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/binding/NettyHttpRequestQueryParametersSpec.groovy
+@@ -107,4 +107,27 @@ class NettyHttpRequestQueryParametersSpec extends Specification {
+         params(request('/p?a=1&b=2&c=3&d=4', config)) == [a: ['1'], b: ['2']]
+         params(request('/p?a=%31&b=2&c=3&d=4', config)) == [a: ['1'], b: ['2']]
+     }
++
++    void "mutable URI parameters preserve decoding configuration and can be changed independently"() {
++        given:
++        def config = new HttpServerConfiguration()
++        config.semicolonIsNormalChar = true
++        config.maxParams = 2
++        def original = request('/p?original=1', config)
++        def mutated = original.mutate().uri(URI.create('/changed?b=x%2By&a=1;a=2&ignored=3'))
++
++        expect:
++        mutated.parameters.names().toList() == ['b', 'a']
++        mutated.parameters.getAll('b') == ['x+y']
++        mutated.parameters.getAll('a') == ['1;a=2']
++
++        when:
++        mutated.parameters.add('a', '4')
++        mutated.parameters.add('added', '5')
++
++        then:
++        mutated.parameters.getAll('a') == ['1;a=2', '4']
++        mutated.parameters.names().toList() == ['b', 'a', 'added']
++        params(original) == [original: ['1']]
++    }
+ }
+-- 
+2.55.0
+
+
+From 71906892a74e48fcd9fe32a9ddbb6e4d805fb46c Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:10:57 +0200
+Subject: [PATCH 4/8] Preserve HTTP/2 connectivity error policy after pipeline
+ removal
+
+---
+ .../handler/MultiplexedServerHandler.java     | 24 +++++---
+ .../handler/Http2WriteFailureSpec.groovy      | 59 ++++++++++++++++---
+ 2 files changed, 66 insertions(+), 17 deletions(-)
+
+diff --git a/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java b/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java
+index e078995775..228fa22008 100644
+--- a/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java
++++ b/http-server-netty/src/main/java/io/micronaut/http/server/netty/handler/MultiplexedServerHandler.java
+@@ -57,19 +57,13 @@ import java.util.OptionalLong;
+  */
+ @Internal
+ abstract class MultiplexedServerHandler {
+-    private static final ChannelFutureListener WRITE_FAILURE_LISTENER = future -> {
+-        Throwable cause = future.cause();
+-        if (cause != null && !(cause instanceof ClosedChannelException)) {
+-            future.channel().pipeline().fireExceptionCaught(cause);
+-        }
+-    };
+-
+     final Logger LOG = LoggerFactory.getLogger(getClass());
+ 
+     @Nullable
+     ChannelHandlerContext ctx;
+     BodySizeLimits bodySizeLimits = BodySizeLimits.UNLIMITED;
+     private final RequestHandler requestHandler;
++    private final ChannelFutureListener writeFailureListener;
+     @Nullable
+     private Compressor compressor;
+     /**
+@@ -82,6 +76,18 @@ abstract class MultiplexedServerHandler {
+ 
+     MultiplexedServerHandler(RequestHandler requestHandler) {
+         this.requestHandler = requestHandler;
++        this.writeFailureListener = future -> {
++            Throwable cause = future.cause();
++            if (cause != null && !(cause instanceof ClosedChannelException)) {
++                ChannelHandlerContext context = requiredCtx();
++                if (context.isRemoved() || context.pipeline().context(context.name()) != context) {
++                    // Keep the server's connectivity error policy after the pipeline is removed.
++                    requestHandler.handleUnboundError(cause);
++                } else {
++                    context.pipeline().fireExceptionCaught(cause);
++                }
++            }
++        };
+     }
+ 
+     final void compressor(@Nullable Compressor compressor) {
+@@ -138,7 +144,7 @@ abstract class MultiplexedServerHandler {
+      * @return The promise for a write whose result is not otherwise observed
+      */
+     final ChannelPromise writePromise() {
+-        return requiredCtx().newPromise().addListener(WRITE_FAILURE_LISTENER);
++        return requiredCtx().newPromise().addListener(writeFailureListener);
+     }
+ 
+     /**
+@@ -738,7 +744,7 @@ abstract class MultiplexedServerHandler {
+                     jfrEvent.populateResponse(response);
+                     jfrEvent.commit();
+                 }
+-            }).addListener(WRITE_FAILURE_LISTENER);
++            }).addListener(writeFailureListener);
+         }
+ 
+         private void logStreamWriteFailure(Throwable cause) {
+diff --git a/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy b/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy
+index 3f43464b24..d1628e53d5 100644
+--- a/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy
++++ b/http-server-netty/src/test/groovy/io/micronaut/http/server/netty/handler/Http2WriteFailureSpec.groovy
+@@ -6,6 +6,7 @@ import io.micronaut.http.server.netty.EmbeddedTestUtil
+ import io.netty.buffer.ByteBuf
+ import io.netty.buffer.Unpooled
+ import io.netty.channel.ChannelHandlerContext
++import io.netty.channel.ChannelInboundHandlerAdapter
+ import io.netty.channel.ChannelOutboundHandlerAdapter
+ import io.netty.channel.ChannelPromise
+ import io.netty.channel.embedded.EmbeddedChannel
+@@ -28,6 +29,50 @@ class Http2WriteFailureSpec extends Specification {
+     private static class Client extends Http2ChannelDuplexHandler {
+     }
+ 
++    def "write failures reach pipeline handlers until the context is unlinked"() {
++        given:
++        def requestHandler = Mock(RequestHandler)
++        def handler = new Http2ServerHandler(requestHandler)
++        List<Throwable> pipelineErrors = []
++        def failure = new IOException("real transport failure")
++        boolean failWhileRemoving = removeContext
++        def observer = new ChannelInboundHandlerAdapter() {
++            @Override
++            void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
++                pipelineErrors.add(cause)
++            }
++
++            @Override
++            void handlerRemoved(ChannelHandlerContext ctx) {
++                if (failWhileRemoving) {
++                    assert !ctx.isRemoved()
++                    assert ctx.pipeline().context(ctx.name()) == null
++                    handler.writePromise().setFailure(failure)
++                }
++            }
++        }
++        def channel = new EmbeddedChannel(observer)
++        handler.ctx = channel.pipeline().context(observer)
++
++        when:
++        if (removeContext) {
++            channel.pipeline().remove(observer)
++        } else {
++            handler.writePromise().setFailure(failure)
++        }
++        EmbeddedTestUtil.advance(channel)
++
++        then:
++        pipelineErrors == (removeContext ? [] : [failure])
++        (removeContext ? 1 : 0) * requestHandler.handleUnboundError(failure)
++
++        cleanup:
++        channel.finishAndReleaseAll()
++
++        where:
++        removeContext << [false, true]
++    }
++
+     def "writes failed after the connection pipeline is removed still report real errors"() {
+         given:
+         def recording = new Recording()
+@@ -40,6 +85,7 @@ class Http2WriteFailureSpec extends Specification {
+         def client = new EmbeddedChannel()
+         EmbeddedTestUtil.connect(server, client)
+         OutboundAccess access = null
++        List<Throwable> unboundErrors = []
+         int responsesWritten = 0
+         boolean record = recordFinalWrite
+         server.pipeline().addLast("http2", new Http2ServerHandler.ConnectionHandlerBuilder(new RequestHandler() {
+@@ -59,7 +105,7 @@ class Http2WriteFailureSpec extends Specification {
+ 
+             @Override
+             void handleUnboundError(Throwable cause) {
+-                throw new AssertionError(cause)
++                unboundErrors.add(cause)
+             }
+         }).build())
+         def duplex = new Client()
+@@ -98,18 +144,13 @@ class Http2WriteFailureSpec extends Specification {
+         pending.each { it.release() }
+         promises.each { it.tryFailure(failure) }
+         server.runPendingTasks()
+-        Throwable observedFailure = null
+-        try {
+-            server.checkException()
+-        } catch (Throwable t) {
+-            observedFailure = t
+-        }
++        server.checkException()
+ 
+         then:
+         responsesWritten == 1
+         content.refCnt() == 0
+         !recordFinalWrite || access.finalWrite().cause().is(failure)
+-        failure instanceof ClosedChannelException ? observedFailure == null : observedFailure.is(failure)
++        failure instanceof ClosedChannelException ? unboundErrors.empty : unboundErrors.any { it.is(failure) }
+ 
+         when:
+         if (jfr) {
+@@ -137,5 +178,7 @@ class Http2WriteFailureSpec extends Specification {
+         true  | false            | 0        | new ClosedChannelException()
+         false | false            | 16       | new IOException("real transport failure")
+         true  | false            | 16       | new IOException("real transport failure")
++        false | false            | 16       | new IOException("Broken pipe")
++        true  | false            | 16       | new IOException("Broken pipe")
+     }
+ }
+-- 
+2.55.0
+
+
+From 26d86698d86a1b15ecda515675bbb4c8f35ade08 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:03:26 +0200
+Subject: [PATCH 5/8] Release text buffers when UTF-8 encoding fails
+
+---
+ .../buffer/netty/NettyReadBufferFactory.java  | 15 +++-
+ .../buffer/netty/NettyReadBufferTest.java     | 79 ++++++++++++++++++-
+ 2 files changed, 89 insertions(+), 5 deletions(-)
+
+diff --git a/buffer-netty/src/main/java/io/micronaut/buffer/netty/NettyReadBufferFactory.java b/buffer-netty/src/main/java/io/micronaut/buffer/netty/NettyReadBufferFactory.java
+index 87167206df..60d7bb97b6 100644
+--- a/buffer-netty/src/main/java/io/micronaut/buffer/netty/NettyReadBufferFactory.java
++++ b/buffer-netty/src/main/java/io/micronaut/buffer/netty/NettyReadBufferFactory.java
+@@ -80,10 +80,17 @@ public final class NettyReadBufferFactory extends ReadBufferFactory {
+ 
+     @Override
+     public ReadBuffer copyOf(CharSequence cs, Charset charset) {
+-        ByteBuf byteBuf = charset == StandardCharsets.UTF_8 ?
+-            ByteBufUtil.writeUtf8(allocator, cs) :
+-            ByteBufUtil.encodeString(allocator, CharBuffer.wrap(cs), charset);
+-        return adapt(byteBuf);
++        if (charset != StandardCharsets.UTF_8) {
++            return adapt(ByteBufUtil.encodeString(allocator, CharBuffer.wrap(cs), charset));
++        }
++        ByteBuf byteBuf = allocator.buffer(ByteBufUtil.utf8MaxBytes(cs));
++        try {
++            ByteBufUtil.writeUtf8(byteBuf, cs);
++            return adapt(byteBuf);
++        } catch (Throwable e) {
++            byteBuf.release();
++            throw e;
++        }
+     }
+ 
+     @Override
+diff --git a/buffer-netty/src/test/java/io/micronaut/buffer/netty/NettyReadBufferTest.java b/buffer-netty/src/test/java/io/micronaut/buffer/netty/NettyReadBufferTest.java
+index 698b493e3e..d2c5ac4d72 100644
+--- a/buffer-netty/src/test/java/io/micronaut/buffer/netty/NettyReadBufferTest.java
++++ b/buffer-netty/src/test/java/io/micronaut/buffer/netty/NettyReadBufferTest.java
+@@ -10,6 +10,8 @@ import io.netty.buffer.UnpooledByteBufAllocator;
+ import org.junit.jupiter.api.Test;
+ 
+ import java.io.IOException;
++import java.nio.charset.Charset;
++import java.nio.charset.StandardCharsets;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.List;
+@@ -39,6 +41,77 @@ public class NettyReadBufferTest extends AbstractReadBufferTest {
+         }
+     }
+ 
++    @Test
++    void copyCharSequenceEncodesCharsetsAndSnapshotsMutableInput() {
++        List<String> texts = List.of("", "55", "a".repeat(100), "ž€😃", "a".repeat(4096), "\ud800", "\udc00", "x\ud800y", "\ud800\ud800");
++        for (boolean direct : List.of(false, true)) {
++            NettyReadBufferFactory factory = NettyReadBufferFactory.of(new UnpooledByteBufAllocator(direct));
++            for (Charset charset : List.of(StandardCharsets.UTF_8, StandardCharsets.UTF_16LE, StandardCharsets.ISO_8859_1)) {
++                for (String text : texts) {
++                    for (boolean mutable : List.of(false, true)) {
++                        CharSequence input = mutable ? new StringBuilder(text) : text;
++                        ByteBuf byteBuf;
++                        try (ReadBuffer readBuffer = factory.copyOf(input, charset)) {
++                            if (input instanceof StringBuilder builder) {
++                                builder.setLength(0);
++                            }
++                            byteBuf = NettyReadBufferFactory.toByteBuf(readBuffer.duplicate());
++                            try {
++                                byte[] actual = new byte[byteBuf.readableBytes()];
++                                byteBuf.getBytes(byteBuf.readerIndex(), actual);
++                                assertArrayEquals(text.getBytes(charset), actual);
++                            } finally {
++                                byteBuf.release();
++                            }
++                        }
++                        if (!text.isEmpty()) {
++                            assertEquals(0, byteBuf.refCnt());
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    @Test
++    void copyCharSequenceReleasesTheBufferWhenEncodingFails() {
++        IllegalStateException failure = new IllegalStateException("character access failed");
++        CharSequence input = new CharSequence() {
++            @Override
++            public int length() {
++                return 3;
++            }
++
++            @Override
++            public char charAt(int index) {
++                if (index == 1) {
++                    throw failure;
++                }
++                return 'a';
++            }
++
++            @Override
++            public CharSequence subSequence(int start, int end) {
++                throw new UnsupportedOperationException();
++            }
++        };
++        for (boolean direct : List.of(false, true)) {
++            CountingAllocator allocator = new CountingAllocator(direct, Integer.MAX_VALUE);
++            NettyReadBufferFactory factory = NettyReadBufferFactory.of(allocator);
++            try {
++                assertSame(failure, assertThrows(IllegalStateException.class, () -> factory.copyOf(input, StandardCharsets.UTF_8)));
++                assertEquals(1, allocator.allocated.size());
++                assertEquals(0, allocator.allocated.getFirst().refCnt());
++            } finally {
++                for (ByteBuf byteBuf : allocator.allocated) {
++                    if (byteBuf.refCnt() > 0) {
++                        byteBuf.release();
++                    }
++                }
++            }
++        }
++    }
++
+     /**
+      * A composite created with the allocator default of 16 components consolidates (copies all the
+      * pieces into one freshly allocated buffer) as soon as there are more than 16 of them, so a
+@@ -200,7 +273,11 @@ public class NettyReadBufferTest extends AbstractReadBufferTest {
+         final List<ByteBuf> allocated = new ArrayList<>();
+ 
+         CountingAllocator(int threshold) {
+-            super(false);
++            this(false, threshold);
++        }
++
++        CountingAllocator(boolean direct, int threshold) {
++            super(direct);
+             this.threshold = threshold;
+         }
+ 
+-- 
+2.55.0
+
+
+From 304e8828770477b93df9979e3d6556c8c02f4115 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:04:28 +0200
+Subject: [PATCH 6/8] Benchmark native UTF-8 buffer encoding alternatives
+
+---
+ .../buffer/netty/Utf8BufferBenchmark.java     | 83 +++++++++++++++++++
+ 1 file changed, 83 insertions(+)
+ create mode 100644 benchmarks/src/jmh/java/io/micronaut/buffer/netty/Utf8BufferBenchmark.java
+
+diff --git a/benchmarks/src/jmh/java/io/micronaut/buffer/netty/Utf8BufferBenchmark.java b/benchmarks/src/jmh/java/io/micronaut/buffer/netty/Utf8BufferBenchmark.java
+new file mode 100644
+index 0000000000..52ef9d2f15
+--- /dev/null
++++ b/benchmarks/src/jmh/java/io/micronaut/buffer/netty/Utf8BufferBenchmark.java
+@@ -0,0 +1,83 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package io.micronaut.buffer.netty;
++
++import io.micronaut.core.io.buffer.ReadBuffer;
++import io.netty.buffer.ByteBufAllocator;
++import io.netty.buffer.ByteBufUtil;
++import org.openjdk.jmh.annotations.Benchmark;
++import org.openjdk.jmh.annotations.BenchmarkMode;
++import org.openjdk.jmh.annotations.Fork;
++import org.openjdk.jmh.annotations.Measurement;
++import org.openjdk.jmh.annotations.Mode;
++import org.openjdk.jmh.annotations.OutputTimeUnit;
++import org.openjdk.jmh.annotations.Param;
++import org.openjdk.jmh.annotations.Scope;
++import org.openjdk.jmh.annotations.Setup;
++import org.openjdk.jmh.annotations.State;
++import org.openjdk.jmh.annotations.Warmup;
++import org.openjdk.jmh.infra.Blackhole;
++
++import java.nio.CharBuffer;
++import java.nio.charset.StandardCharsets;
++import java.util.concurrent.TimeUnit;
++
++/**
++ * Compare UTF-8 encoding into allocator-owned buffers, including their release.
++ */
++@State(Scope.Thread)
++@BenchmarkMode(Mode.AverageTime)
++@OutputTimeUnit(TimeUnit.NANOSECONDS)
++@Fork(3)
++@Warmup(iterations = 3, time = 1)
++@Measurement(iterations = 5, time = 1)
++public class Utf8BufferBenchmark {
++    @Param({"ASCII_1", "ASCII_2", "ASCII_16", "ASCII_100", "ASCII_4096", "UNICODE_100", "UNICODE_4096", "BUILDER_100", "UNICODE_BUILDER_4096"})
++    public String scenario;
++
++    private final ByteBufAllocator allocator = ByteBufAllocator.DEFAULT;
++    private final NettyReadBufferFactory factory = NettyReadBufferFactory.of(allocator);
++    private CharSequence text;
++
++    @Setup
++    public void setup() {
++        int size = Integer.parseInt(scenario.substring(scenario.lastIndexOf('_') + 1));
++        String value = scenario.startsWith("UNICODE") ? "ž€😃a".repeat((size + 4) / 5).substring(0, size) : "a".repeat(size);
++        text = scenario.contains("BUILDER") ? new StringBuilder(value) : value;
++    }
++
++    @Benchmark
++    public void nettyUtf8(Blackhole blackhole) {
++        try (ReadBuffer buffer = factory.copyOf(text, StandardCharsets.UTF_8)) {
++            blackhole.consume(buffer);
++        }
++    }
++
++    @Benchmark
++    public void jdkBytes(Blackhole blackhole) {
++        byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
++        try (ReadBuffer buffer = factory.adapt(allocator.buffer(bytes.length).writeBytes(bytes))) {
++            blackhole.consume(buffer);
++        }
++    }
++
++    @Benchmark
++    public void jdkEncoder(Blackhole blackhole) {
++        try (ReadBuffer buffer = factory.adapt(ByteBufUtil.encodeString(allocator, CharBuffer.wrap(text), StandardCharsets.UTF_8))) {
++            blackhole.consume(buffer);
++        }
++    }
++}
+-- 
+2.55.0
+
+
+From 792718ec21cccd37107397afe3c0dda4061b0e09 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 15:06:29 +0200
+Subject: [PATCH 7/8] Apply the server error policy to TLS HTTP/2 connection
+ failures
+
+---
+ .../server/netty/HttpPipelineBuilder.java     |  11 +-
+ .../netty/Http2ConnectionErrorsTest.java      | 119 ++++++++++++++++++
+ 2 files changed, 127 insertions(+), 3 deletions(-)
+ create mode 100644 http-server-netty/src/test/java/io/micronaut/http/server/netty/Http2ConnectionErrorsTest.java
+
+diff --git a/http-server-netty/src/main/java/io/micronaut/http/server/netty/HttpPipelineBuilder.java b/http-server-netty/src/main/java/io/micronaut/http/server/netty/HttpPipelineBuilder.java
+index 1d1979df78..32ab40a154 100644
+--- a/http-server-netty/src/main/java/io/micronaut/http/server/netty/HttpPipelineBuilder.java
++++ b/http-server-netty/src/main/java/io/micronaut/http/server/netty/HttpPipelineBuilder.java
+@@ -479,6 +479,8 @@ final class HttpPipelineBuilder {
+             if (!legacyMultiplexHandlers) {
+                 new StreamPipeline(channel, sslHandler, connectionCustomizer).afterHttp2ServerHandlerSetUp();
+             }
++            // Custom handlers observe errors before the terminal server policy consumes them.
++            insertUnboundErrorHandler(true);
+         }
+ 
+         private Http2FrameCodec createHttp2FrameCodec() {
+@@ -660,14 +662,17 @@ final class HttpPipelineBuilder {
+                     cp.fireChannelRead(ReferenceCountUtil.retain(msg));
+                 }
+             });
++            insertUnboundErrorHandler(false);
++            connectionCustomizer.onInitialPipelineBuilt();
++        }
++
++        private void insertUnboundErrorHandler(boolean ssl) {
+             pipeline.addLast(new ChannelInboundHandlerAdapter() {
+                 @Override
+                 public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+-                    // makeRequestHandler is pretty cheap so this is fine
+-                    makeRequestHandler(Optional.empty(), false).handleUnboundError(cause);
++                    makeRequestHandler(Optional.empty(), ssl).handleUnboundError(cause);
+                 }
+             });
+-            connectionCustomizer.onInitialPipelineBuilt();
+         }
+ 
+         /**
+diff --git a/http-server-netty/src/test/java/io/micronaut/http/server/netty/Http2ConnectionErrorsTest.java b/http-server-netty/src/test/java/io/micronaut/http/server/netty/Http2ConnectionErrorsTest.java
+new file mode 100644
+index 0000000000..33853e4a34
+--- /dev/null
++++ b/http-server-netty/src/test/java/io/micronaut/http/server/netty/Http2ConnectionErrorsTest.java
+@@ -0,0 +1,119 @@
++package io.micronaut.http.server.netty;
++
++import ch.qos.logback.classic.Level;
++import ch.qos.logback.classic.Logger;
++import ch.qos.logback.classic.spi.ILoggingEvent;
++import ch.qos.logback.core.read.ListAppender;
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.context.annotation.Requires;
++import io.micronaut.http.MediaType;
++import io.micronaut.http.annotation.Controller;
++import io.micronaut.http.annotation.Get;
++import io.micronaut.http.client.HttpClient;
++import io.micronaut.runtime.server.EmbeddedServer;
++import io.netty.channel.Channel;
++import io.netty.channel.ChannelHandlerContext;
++import io.netty.channel.ChannelInboundHandlerAdapter;
++import io.netty.handler.codec.http2.Http2ConnectionHandler;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++import org.slf4j.LoggerFactory;
++
++import java.io.IOException;
++import java.util.List;
++import java.util.Map;
++import java.util.concurrent.CopyOnWriteArrayList;
++import java.util.concurrent.TimeUnit;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class Http2ConnectionErrorsTest {
++    @ParameterizedTest
++    @ValueSource(booleans = {false, true})
++    void tlsConnectionErrorsReachCustomizersAndTheServerErrorPolicy(boolean legacy) throws Exception {
++        Logger routingLogger = (Logger) LoggerFactory.getLogger(RoutingInBoundHandler.class);
++        Logger tailLogger = (Logger) LoggerFactory.getLogger("io.netty.channel.DefaultChannelPipeline");
++        var previousLevel = routingLogger.getLevel();
++        ListAppender<ILoggingEvent> routingLogs = new ListAppender<>();
++        ListAppender<ILoggingEvent> tailLogs = new ListAppender<>();
++        routingLogs.start();
++        tailLogs.start();
++        routingLogger.addAppender(routingLogs);
++        tailLogger.addAppender(tailLogs);
++        routingLogger.setLevel(Level.DEBUG);
++        try (ApplicationContext context = ApplicationContext.run(Map.of(
++            "spec.name", "Http2ConnectionErrorsTest",
++            "micronaut.server.http-version", "2.0",
++            "micronaut.server.port", -1,
++            "micronaut.server.ssl.enabled", true,
++            "micronaut.server.ssl.port", -1,
++            "micronaut.server.ssl.build-self-signed", true,
++            "micronaut.server.netty.legacy-multiplex-handlers", legacy,
++            "micronaut.http.client.http-version", "2.0",
++            "micronaut.http.client.ssl.insecure-trust-all-certificates", true
++        ))) {
++            List<Channel> connections = new CopyOnWriteArrayList<>();
++            List<Throwable> observed = new CopyOnWriteArrayList<>();
++            context.getBean(NettyServerCustomizer.Registry.class).register(new NettyServerCustomizer() {
++                @Override
++                public NettyServerCustomizer specializeForChannel(Channel channel, ChannelRole role) {
++                    if (role != ChannelRole.CONNECTION) {
++                        return this;
++                    }
++                    return new NettyServerCustomizer() {
++                        @Override
++                        public void onInitialPipelineBuilt() {
++                            if (channel.pipeline().get(Http2ConnectionHandler.class) != null) {
++                                connections.add(channel);
++                                channel.pipeline().addLast("custom-error-observer", new ChannelInboundHandlerAdapter() {
++                                    @Override
++                                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
++                                        observed.add(cause);
++                                        ctx.fireExceptionCaught(cause);
++                                    }
++                                });
++                            }
++                        }
++                    };
++                }
++            });
++            EmbeddedServer server = context.getBean(EmbeddedServer.class).start();
++            try (HttpClient client = context.createBean(HttpClient.class, server.getURL())) {
++                assertEquals("ok", client.toBlocking().retrieve("/connection-errors"));
++                assertEquals(1, connections.size());
++                Channel channel = connections.getFirst();
++                List<Throwable> failures = List.of(
++                    new IOException("io_uring write(..) failed with error(-32): Broken pipe"),
++                    new IOException("real transport failure"),
++                    new IllegalStateException("Broken pipe")
++                );
++                for (Throwable failure : failures) {
++                    channel.eventLoop().submit(() -> channel.pipeline().fireExceptionCaught(failure)).get(10, TimeUnit.SECONDS);
++                    List<ILoggingEvent> events = routingLogs.list.stream()
++                        .filter(event -> event.getThrowableProxy() != null && failure.getMessage().equals(event.getThrowableProxy().getMessage()))
++                        .toList();
++                    assertEquals(1, events.size());
++                    assertEquals(failure == failures.getFirst() ? Level.DEBUG : Level.ERROR, events.getFirst().getLevel());
++                }
++                assertEquals(failures, observed);
++                assertTrue(tailLogs.list.isEmpty());
++            }
++        } finally {
++            routingLogger.detachAppender(routingLogs);
++            tailLogger.detachAppender(tailLogs);
++            routingLogger.setLevel(previousLevel);
++            routingLogs.stop();
++            tailLogs.stop();
++        }
++    }
++
++    @Controller("/connection-errors")
++    @Requires(property = "spec.name", value = "Http2ConnectionErrorsTest")
++    static class TestController {
++        @Get(produces = MediaType.TEXT_PLAIN)
++        String get() {
++            return "ok";
++        }
++    }
++}
+-- 
+2.55.0
+
+
+From 6273f6b9bedfd18e6307ae466a1919894210053b Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 15:08:39 +0200
+Subject: [PATCH 8/8] Mark new Netty benchmark packages null-safe
+
+---
+ .../micronaut/buffer/netty/package-info.java  | 22 +++++++++++++++++++
+ .../io/micronaut/http/netty/package-info.java | 22 +++++++++++++++++++
+ 2 files changed, 44 insertions(+)
+ create mode 100644 benchmarks/src/jmh/java/io/micronaut/buffer/netty/package-info.java
+ create mode 100644 benchmarks/src/jmh/java/io/micronaut/http/netty/package-info.java
+
+diff --git a/benchmarks/src/jmh/java/io/micronaut/buffer/netty/package-info.java b/benchmarks/src/jmh/java/io/micronaut/buffer/netty/package-info.java
+new file mode 100644
+index 0000000000..890f7bcac0
+--- /dev/null
++++ b/benchmarks/src/jmh/java/io/micronaut/buffer/netty/package-info.java
+@@ -0,0 +1,22 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++/**
++ * Netty buffer benchmarks.
++ */
++@NullMarked
++package io.micronaut.buffer.netty;
++
++import org.jspecify.annotations.NullMarked;
+diff --git a/benchmarks/src/jmh/java/io/micronaut/http/netty/package-info.java b/benchmarks/src/jmh/java/io/micronaut/http/netty/package-info.java
+new file mode 100644
+index 0000000000..829a99b58e
+--- /dev/null
++++ b/benchmarks/src/jmh/java/io/micronaut/http/netty/package-info.java
+@@ -0,0 +1,22 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++/**
++ * Netty HTTP benchmarks.
++ */
++@NullMarked
++package io.micronaut.http.netty;
++
++import org.jspecify.annotations.NullMarked;
+-- 
+2.55.0
+

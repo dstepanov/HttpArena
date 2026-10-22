@@ -1,5 +1,7 @@
 # Micronaut 5.3.x: full request call paths
 
+The remaining issues below have now been investigated and patched or explicitly rejected in the [fixes and buffer follow-up](FOLLOWUP-5.3-FIXES.md). This document preserves the original baseline measurements.
+
 Core revision `01f1ad23348b9a62a15b1372b712e4faae0bddfc`, application revision `c311e88470064f8e7255d821a61d4e30e5a08854`. Both applications resolve all 19 Micronaut core modules to this locally built `5.3.0-SNAPSHOT`. Platform 5.2.3 still supplies the ecosystem versions. Every JSON path uses Micronaut Serialization with Jackson Core; both Databind namespaces are excluded and absent from the shaded jars.
 
 ## Method and limits
@@ -107,19 +109,13 @@ Both applications pass `mvn clean verify` against their committed released platf
 
 On Linux, both final 5.3 jars pass complete JSON/multiplier/gzip checks, database limits, fresh Unicode/quoted/tabbed/emoji tags after a committed update using the same query parameters, 0-byte and 10 KiB echo, chunked echo, 20 MiB echo, HTML escaping/row checks and immediate static-file replacement. Each entry also completes 10,000 requests over h2c, HTTP/2 TLS and HTTP/3 with zero failures/timeouts, and the independent QUIC client checks the exact sum body.
 
-PR #1612 validation succeeded on application commit `56fa29320f4c75f23e905c6b35aed17a5592f3f7`. Each GitHub validation reports 111 passed, zero failed and one skipped; CI skips HTTP/3 because its h2load-h3 image is absent. The local real HTTP/3 checks above cover that gap for the 5.3 snapshot. The GitHub jobs validate the committed platform build; the local profiling and protocol checks above validate the pinned 5.3 build. No core source code or public API was changed.
+PR #1612 validation succeeded on application commit `56fa29320f4c75f23e905c6b35aed17a5592f3f7`. Each GitHub validation reports 111 passed, zero failed and one skipped; CI skips HTTP/3 because its h2load-h3 image is absent. The local real HTTP/3 checks above cover that gap for the 5.3 snapshot. The GitHub jobs validate the committed platform build; the local profiling and protocol checks above validate the pinned 5.3 build. No core source code or public API was changed at that original checkpoint; subsequent framework patches are covered in the fixes report.
 
-## Remaining issues, ranked
+## Remaining-issue follow-up
 
-1. **HTTP/2 teardown warning storm.** A separate 256-connection × 64-stream test on pinned 5.3 reproduces 10,432 closed-channel warnings with adaptive buffers and 12,288 with pooled buffers. All completed HTTP requests succeeded; each run still had exactly 16,384 started-but-unfinished requests when the duration-limited client stopped. The logs cluster around shutdown. This points to handling expected cancelled writes, not an allocator fix. `MultiplexedServerHandler` full-response paths use `ChannelHandlerContext.voidPromise()` and the JFR promise path uses `FIRE_EXCEPTION_ON_FAILURE`; streamed-batch failures already use `logStreamWriteFailure`. A framework fix should distinguish expected stream/channel cancellation from genuine write failures and preserve completion callbacks/JFR accounting, with focused close-during-write tests. Do not suppress all channel errors or lower the global log level.
-2. **Static-file intermediate arrays.** Replace the file stream's byte-array staging with a read-buffer/channel path, preserving offload, freshness, ranges, cancellation and cold-file latency. This is the largest observed allocation opportunity for static files.
-3. **Query-map duplication.** Add an owned-decoder-map path while preserving snapshot/mutation semantics for existing callers; test repeated parameters, ordering, escaping, limits and client URI updates.
-4. **Unwrapped Serialization accessor cost.** Investigate primitive access and parent-property dispatch in the serializer/introspection path. Keep the simpler flat DTO until an end-to-end improvement is demonstrated.
-5. **Echo ownership and UTF-8 output.** Evaluate native ByteBody forwarding and direct UTF-8 rendering only with contract tests; do not remove defensive copies globally.
+The [dedicated fixes report](FOLLOWUP-5.3-FIXES.md) covers HTTP/2 teardown promises, native file buffers, decoder-map ownership, primitive access in customized Serialization, echo ownership, UTF-8 encoding, fortunes rendering, and the legacy JSON entry. Each issue received a separate agent investigation, focused regressions and measurement where applicable. No response or file-content cache was added; JSON remains Micronaut Serialization.
 
-### Client framing errors remain unassigned
-
-The separate instrumented gcannon run attributes the read failures to its HTTP parser, which occasionally starts parsing a 4 KiB JSON body fragment as a response header. This occurs with both allocators (1,112 and 1,033 read failures in the short diagnostic runs). That establishes framing desynchronization, but does not by itself identify whether the cause is client receive bookkeeping, wire framing or the server. A wire-level reproduction is needed before assigning blame. No throughput claim in the controlled comparison depends on those gcannon JSON/DB runs; they use wrk with zero socket/HTTP errors. Pipelining's gcannon runs also had zero reported errors.
+The gcannon framing investigation now establishes a client bug: returning receive buffers advanced both the ring tail and an offset, overwriting unconsumed descriptors. The correction passes wrap/fragmentation/sanitizer checks and reports zero read errors against an independent server and Micronaut. This replaces the earlier unassigned-framing hypothesis; historical read-error counts above are preserved. See the follow-up for source patches, before/after validation and measurement limits.
 
 ## Captures and reproduction
 

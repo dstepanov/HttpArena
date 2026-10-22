@@ -1,0 +1,20 @@
+[
+  {
+    "entry": "tuned",
+    "core": "6273f6b9be",
+    "sha256": "29550235994ff5bb8b985909b2ed7997037f0e76185ea76bc1edfc3cc49e05af",
+    "databindClasses": false
+  },
+  {
+    "entry": "production",
+    "core": "6273f6b9be",
+    "sha256": "0e65a4af7c0661100e28842d721f05cdc5c478a3f25d5b82fb48cbf22bc3287f",
+    "databindClasses": false
+  },
+  {
+    "entry": "legacy",
+    "core": "6273f6b9be",
+    "sha256": "ac27cb5172d4673b43c93b422e9e22de95813772363487c5856e2375a3329b82",
+    "databindClasses": false
+  }
+]

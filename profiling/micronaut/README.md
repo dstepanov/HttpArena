@@ -2,9 +2,9 @@
 
 Profiles of `micronaut-tuned` and `micronaut-production` against a Micronaut 5.3.x snapshot. [REPORT.md](REPORT.md) and `results/load-*.txt` retain the original captures, including their errors and unmatched workloads. The corrected drivers produce new measurements; they do not recreate every historical command.
 
-The [current 5.3.x follow-up](REPORT-5.3.md) contains the complete 32-workload baseline, native TLS/QUIC call paths and controlled statement-cache/allocator experiments. Its retained changes are on application commit `56fa29320f4c75f23e905c6b35aed17a5592f3f7`.
+The [current 5.3.x follow-up](REPORT-5.3.md) contains the complete 32-workload baseline, native TLS/QUIC call paths and controlled statement-cache/allocator experiments. Its original retained changes are on application commit `56fa29320f4c75f23e905c6b35aed17a5592f3f7`. The subsequent [fixes report](FOLLOWUP-5.3-FIXES.md) covers the remaining issues, source patches and buffer/caching decisions.
 
-## Application source and build
+## Original baseline source and build
 
 The benchmark applications come from [HttpArena PR #1612](https://github.com/MDA2AV/HttpArena/pull/1612), not the `frameworks/` directories on this profiling branch. The original capture used the application before the rendering/JSON follow-up. The new 32-workload baseline uses application commit `c311e88470064f8e7255d821a61d4e30e5a08854` (equivalent framework trees at `1c37470dfe50861bf7699b2223280f5ebe872fcb`). For the retained follow-up changes, pin `56fa29320f4c75f23e905c6b35aed17a5592f3f7`:
 
@@ -16,7 +16,7 @@ cp -R httparena-apps/frameworks/micronaut-tuned /tmp/micronaut-profile-jars/tune
 cp -R httparena-apps/frameworks/micronaut-production /tmp/micronaut-profile-jars/production
 ```
 
-The committed application POMs target platform 5.2.3. The historical report used core `cc5ad2be35`. For the current follow-up, publish clean micronaut-core commit `01f1ad23348b9a62a15b1372b712e4faae0bddfc` to Maven Local with JDK 25 (`./gradlew -I /absolute/path/to/profiling/micronaut/nojavadoc.gradle publishToMavenLocal`), then set `<micronaut.core.version>5.3.0-SNAPSHOT</micronaut.core.version>` in each **copied** application POM. The platform parent manages core modules directly, so a BOM import alone does not override them. Also add this dependency-management import:
+The committed tuned/production POMs target platform 5.2.3. The historical report used core `cc5ad2be35`. For the original 5.3 baseline, publish clean micronaut-core commit `01f1ad23348b9a62a15b1372b712e4faae0bddfc` to Maven Local with JDK 25 (`./gradlew -I /absolute/path/to/profiling/micronaut/nojavadoc.gradle publishToMavenLocal`), then set `<micronaut.core.version>5.3.0-SNAPSHOT</micronaut.core.version>` in each **copied** application POM. The platform parent manages core modules directly, so a BOM import alone does not override them. Also add this dependency-management import:
 
 ```xml
 <dependencyManagement>
@@ -33,6 +33,12 @@ The committed application POMs target platform 5.2.3. The historical report used
 ```
 
 Build both copies with JDK 27 using `mvn clean verify dependency:list`. Check the resolved list: every `io.micronaut` core module must be `5.3.0-SNAPSHOT` before accepting a profile. Record the exact JDK build and resolved dependency versions with any new results. Dataset loading, PostgreSQL JSON tags and HTTP JSON responses use Micronaut Serialization; both applications exclude Jackson Databind. Jackson Core is still the streaming backend.
+
+## Final fixes source
+
+For the final fixes, use application commit `f000cc0ccc02da0957e958f7d9990743afe44bfe` and core base `01f1ad23348b9a62a15b1372b712e4faae0bddfc` with [micronaut-core-5.3.patch](patches/micronaut-core-5.3.patch) applied. The patch is an eight-commit mail series: use `git am /absolute/path/to/micronaut-core-5.3.patch` on a clean branch at the base. Its tree reproduces core `6273f6b9bedfd18e6307ae466a1919894210053b` (reapplying changes commit IDs). Publish the patched core and apply the same property/BOM overrides to fresh application copies before building. The legacy `micronaut` entry also uses Micronaut Serialization at this application commit; its committed platform remains 5.1.0 and its released build uses JDK 25.
+
+The [final fixes report](FOLLOWUP-5.3-FIXES.md) distinguishes the timed HTTP/1 checkpoint from the later TLS/H2 error-policy fix and provides the separate Serialization and gcannon patches. The Serialization patch is a library experiment; the application keeps its released Serialization dependency. Reproduce baseline and patched builds with separate artifact repositories so the same snapshot version cannot silently resolve to the wrong code.
 
 ## Running profiles
 
@@ -63,4 +69,4 @@ python3 profiling/micronaut/test_runner.py
 
 This exercises success, argument preservation, an occupied HTTP port, startup/readiness/load/profiler failures, empty or stale captures, interruption cleanup and failure propagation, without starting a server.
 
-The [rendering microbenchmarks](benchmarks/README.md) and [saved JMH results](results/fortunes-followup-jmh.json) compare the before/after escaping and Rocker UTF-8 paths on the 200-row fixture. They measure isolated rendering work, not HTTP throughput. Static-file changes are deliberately deferred: entry-owned caches are disallowed, freshness must be preserved, and inline disk reads need cold-cache latency measurements.
+The [rendering microbenchmarks](benchmarks/README.md) and [saved JMH results](results/fortunes-followup-jmh.json) compare the before/after escaping and Rocker UTF-8 paths on the 200-row fixture. They measure isolated rendering work, not HTTP throughput. The shared framework static-file patch is described in the fixes report. Entry-owned file caches remain excluded; files are reopened for each request and disk reads stay on the IO executor. Warm component timings do not establish cold-disk latency improvements.

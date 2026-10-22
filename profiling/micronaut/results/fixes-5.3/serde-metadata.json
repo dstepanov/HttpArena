@@ -1,0 +1,151 @@
+{
+  "candidate_commit": "a3ca50ca5",
+  "serde_baseline": "f70429359 (3.2.6-SNAPSHOT, version-only commit immediately after v3.2.5)",
+  "core": "01f1ad23348b9a62a15b1372b712e4faae0bddfc / 5.3.0-SNAPSHOT",
+  "jdk": "Temurin 27+35, Linux AArch64, /opt/jdk27/bin/java",
+  "cpu": "codex-mn53-fixes, taskset CPUs 4-5; unrelated host JVM workload prevents isolated-machine timing claims",
+  "jmh": "1.37, 3 forks, 5x1s warmup, 5x1s measurement, -prof gc, -Xms256m -Xmx256m",
+  "configuration": {
+    "micronaut.serde.serialization.inclusion": "ALWAYS"
+  },
+  "payload": "50 equivalent flat or @JsonUnwrapped item records; byte-identical JSON checked in each setup",
+  "frozen_classpaths": {
+    "baseline": "/private/tmp/mn53-serde-jmh-baseline-always",
+    "candidate": "/private/tmp/mn53-serde-jmh-cached-primitive",
+    "rejected_simple_prototype": "/private/tmp/mn53-serde-jmh-patched-always",
+    "runtime_exclusions": [
+      "*databind*.jar",
+      "*blackbird*.jar"
+    ]
+  },
+  "sha256": {
+    "baseline_jar": "7df2392cb5ce7e1cff63c056712bf5979bcdb014c5d54d758f71d93766895ce0",
+    "candidate_jar": "e915c26ecbc896cbf011c2e807dde8880f3302ef62de2cfc5d51007bc107720f"
+  },
+  "unchanged_classes": {
+    "SimpleObjectSerializer": "536f0d2a6b45836c21b93144cd95867eb7f0511db2619cd618c52ed5456b7448",
+    "SerBean": "9e77f531f7171671fa0d92bcc9b5d2afa3431373ff582fc6821bbdf2a8377fa0"
+  },
+  "experiments": [
+    {
+      "name": "NON_EMPTY fixture mismatch",
+      "status": "excluded from app claims; did not exercise app ALWAYS configuration",
+      "files": [
+        "/private/tmp/mn53-serde-baseline.json",
+        "/private/tmp/mn53-serde-patched.json"
+      ]
+    },
+    {
+      "name": "Broad SimpleObjectSerializer prototype",
+      "status": "rejected: ordinary runtime-flat serializer throughput regressed 79077 to 61898 ops/s; JIT/inlining cause is an inference, not proven",
+      "files": [
+        "default-baseline.json",
+        "default-patched.json",
+        "runtime-flat-baseline.json",
+        "runtime-flat-patched.json"
+      ],
+      "note": "These are NOT measurements for candidate a3ca50ca5."
+    },
+    {
+      "name": "Narrow customized primitive candidate a3ca50ca5",
+      "status": "Paired JMH and full affected/style/docs validation complete; retain allocation improvement only, no speed claim. See checks.final_totals.",
+      "production_change": "31 lines in CustomizedObjectSerializer only; SimpleObjectSerializer and SerBean class bytes identical to baseline",
+      "results": "candidate-{default,runtime-flat}-{baseline-always,cached-primitive}.json"
+    }
+  ],
+  "checks": {
+    "five_focused": "PASS /private/tmp/mn53-serde-cached-final.log",
+    "existing_unwrapped": "42 existing cases passed in /private/tmp/mn53-serde-cached-primitive.log; run had one wrong char expectation in new fixture, subsequently corrected and passed",
+    "full_module_style_docs": "PASS with validation-only 2g heap, forkEvery=25, maxParallelForks=1 and predictive selection/distribution disabled; log /private/tmp/mn53-followup/serde-full-check-final.log",
+    "first_full_run": {
+      "log": "/private/tmp/mn53-followup/serde-full-check.log",
+      "support": {
+        "tests": 270,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "jackson_interrupted": {
+        "tests_recorded": 521,
+        "assertion_failures": 0,
+        "skipped_or_interrupted": 1,
+        "process_failure": "Java heap space"
+      },
+      "completed_tasks": [
+        ":micronaut-serde-support:check",
+        "aggregate Checkstyle",
+        "Spotless",
+        "docs"
+      ],
+      "existing_tolerated_diagnostics": [
+        "DeserBean.java 2025 > 2000 lines",
+        "Encoder.java unregistered @implNote",
+        "SerdeException.java two invalid @see 2.14 tags"
+      ],
+      "new_patch_file_checkstyle_findings": 0
+    },
+    "retry": {
+      "log": "/private/tmp/mn53-followup/serde-jackson-full-retry.log",
+      "init_script": "/private/tmp/mn53-serde-full-tests-bounded.gradle",
+      "test_heap": "2g",
+      "fork_every_classes": 25,
+      "status": "PASS: Gradle/HTML 1855 tests, 1840 passed, 15 skipped, 0 failures",
+      "xml_note": "XML totals 1854 because unchanged SerdeJsonIncludeSpec is HTML 285 vs XML 284; XML failures/errors are zero."
+    },
+    "final_totals": {
+      "reported_cases": 2125,
+      "passed": 2110,
+      "skipped": 15,
+      "failures": 0,
+      "support_cases": 270,
+      "jackson_cases": 1855
+    },
+    "source_changes_for_validation": "none; existing tolerated Checkstyle/Javadoc diagnostics remain"
+  },
+  "candidate_measurements": {
+    "candidate-default-baseline-always.json": [
+      {
+        "benchmark": "io.micronaut.serde.UnwrappedItemBenchmark.flat",
+        "ops_per_second": 102009.30685820337,
+        "error": 1351.9086723738185,
+        "bytes_per_operation": 14817.756091290174
+      },
+      {
+        "benchmark": "io.micronaut.serde.UnwrappedItemBenchmark.unwrapped",
+        "ops_per_second": 76954.16071427897,
+        "error": 923.6835920225471,
+        "bytes_per_operation": 13044.989083741202
+      }
+    ],
+    "candidate-default-cached-primitive.json": [
+      {
+        "benchmark": "io.micronaut.serde.UnwrappedItemBenchmark.flat",
+        "ops_per_second": 98795.0823754446,
+        "error": 1703.5375000486654,
+        "bytes_per_operation": 14892.494143230595
+      },
+      {
+        "benchmark": "io.micronaut.serde.UnwrappedItemBenchmark.unwrapped",
+        "ops_per_second": 74740.1366720244,
+        "error": 1180.2641071128958,
+        "bytes_per_operation": 12298.397136970605
+      }
+    ],
+    "candidate-runtime-flat-baseline-always.json": [
+      {
+        "benchmark": "io.micronaut.serde.UnwrappedItemBenchmark.flat",
+        "ops_per_second": 82058.20781827289,
+        "error": 2397.87246735437,
+        "bytes_per_operation": 15943.519806957156
+      }
+    ],
+    "candidate-runtime-flat-cached-primitive.json": [
+      {
+        "benchmark": "io.micronaut.serde.UnwrappedItemBenchmark.flat",
+        "ops_per_second": 82470.32241023245,
+        "error": 2726.568005937704,
+        "bytes_per_operation": 15975.505785095078
+      }
+    ]
+  }
+}

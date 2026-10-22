@@ -1,0 +1,28 @@
+{
+  "http-client": {
+    "tests": 1334,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 20,
+    "failingCases": [
+      {
+        "class": "io.micronaut.http.client.AsyncStreamingDecompressedLimitTest",
+        "test": "decompressedEventStreamLargerThanMaxContentLengthFails()",
+        "message": "org.opentest4j.AssertionFailedError: Expected java.util.concurrent.ExecutionException to be thrown, but nothing was thrown."
+      }
+    ]
+  },
+  "http-server-netty": {
+    "tests": 2542,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 22,
+    "failingCases": [
+      {
+        "class": "io.micronaut.http.server.netty.binding.AsyncRequestBodyFilterReadTest",
+        "test": "executionError",
+        "message": "java.lang.IllegalStateException: Possible memory leak detected for resource scope 'AsyncRequestBodyFilterReadTest'. Please use paranoid leak detection to get more information, or set -Dio.netty.util.LeakPresenceDetector.trackCreationStack=true"
+      }
+    ]
+  }
+}

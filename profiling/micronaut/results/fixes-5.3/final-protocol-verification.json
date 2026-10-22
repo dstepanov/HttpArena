@@ -1,0 +1,14 @@
+[
+  {
+    "entry": "tuned",
+    "http_json_gzip_db_freshness_unicode_echo_static_fortunes": true,
+    "h2c_h2tls_requests_each": 10000,
+    "h3_exact_body": true
+  },
+  {
+    "entry": "production",
+    "http_json_gzip_db_freshness_unicode_echo_static_fortunes": true,
+    "h2c_h2tls_requests_each": 10000,
+    "h3_exact_body": true
+  }
+]

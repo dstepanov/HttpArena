@@ -1,0 +1,75 @@
+{
+  "baselineCore": "01f1ad23348b9a62a15b1372b712e4faae0bddfc",
+  "jdk": "Temurin27+35 Linux ARM64",
+  "container": "codex-mn53-fixes",
+  "cpuSet": "4-5",
+  "gcHeap": "512MiB G1 defaults",
+  "warmup": "3x1s",
+  "measurement": "5x1s",
+  "forksPerVariant": 2,
+  "runOrder": [
+    "before",
+    "after",
+    "after",
+    "before"
+  ],
+  "scope": "FileInputStream body publisher; direct executor; pooled Netty read buffers; warm page cache; opens/closes file per operation",
+  "caveats": [
+    "Other host work continued; CPU pinning is within VM only.",
+    "No end-to-end throughput or cold disk IO gain is claimed.",
+    "No application file content cache."
+  ],
+  "results": [
+    {
+      "fileBytes": 8192,
+      "before": {
+        "microseconds": [
+          2.2355098221555822,
+          2.205754184956766
+        ],
+        "bytesPerOp": [
+          16800.01443154143,
+          16800.014219880763
+        ]
+      },
+      "after": {
+        "microseconds": [
+          1.6947777116797536,
+          1.5938701991384248
+        ],
+        "bytesPerOp": [
+          872.0808092668949,
+          871.973075182634
+        ]
+      },
+      "microsecondsChangePercent": -25.952433686633857,
+      "bytesPerOpChangePercent": -94.80936786529881
+    },
+    {
+      "fileBytes": 1048576,
+      "before": {
+        "microseconds": [
+          114.96621632039758,
+          117.77482628153311
+        ],
+        "bytesPerOp": [
+          1061246.734590078,
+          1061262.8854388534
+        ]
+      },
+      "after": {
+        "microseconds": [
+          58.58486108323491,
+          57.41025142219471
+        ],
+        "bytesPerOp": [
+          24764.587896038414,
+          24763.476674733698
+        ]
+      },
+      "microsecondsChangePercent": -50.16129892318898,
+      "bytesPerOpChangePercent": -97.66653285792425
+    }
+  ],
+  "baselineJarSha256": "f21dc14c925ecf73e68afaa39e814a0814f15862bbd61c0a7bd10a5a329eee86"
+}

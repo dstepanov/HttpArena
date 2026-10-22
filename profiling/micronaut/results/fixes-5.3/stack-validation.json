@@ -1,0 +1,52 @@
+[
+  {
+    "capture": "r1-after-echo",
+    "cpuSamples": 17913,
+    "maxDepth": 92
+  },
+  {
+    "capture": "r1-after-fortunes",
+    "cpuSamples": 19425,
+    "maxDepth": 115
+  },
+  {
+    "capture": "r1-after-json",
+    "cpuSamples": 19686,
+    "maxDepth": 89
+  },
+  {
+    "capture": "r1-after-query",
+    "cpuSamples": 18937,
+    "maxDepth": 93
+  },
+  {
+    "capture": "r1-after-static",
+    "cpuSamples": 19563,
+    "maxDepth": 88
+  },
+  {
+    "capture": "r1-before-echo",
+    "cpuSamples": 19127,
+    "maxDepth": 99
+  },
+  {
+    "capture": "r1-before-fortunes",
+    "cpuSamples": 19175,
+    "maxDepth": 117
+  },
+  {
+    "capture": "r1-before-json",
+    "cpuSamples": 19644,
+    "maxDepth": 90
+  },
+  {
+    "capture": "r1-before-query",
+    "cpuSamples": 16152,
+    "maxDepth": 95
+  },
+  {
+    "capture": "r1-before-static",
+    "cpuSamples": 19573,
+    "maxDepth": 85
+  }
+]

@@ -1,0 +1,50 @@
+{
+  "http-netty": {
+    "tests": 170,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 3,
+    "failingCases": []
+  },
+  "http-client": {
+    "tests": 1336,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 20,
+    "failingCases": [
+      {
+        "class": "io.micronaut.http.client.AsyncStreamingDecompressedLimitTest",
+        "test": "decompressedEventStreamLargerThanMaxContentLengthFails()",
+        "message": "org.opentest4j.AssertionFailedError: Expected java.util.concurrent.ExecutionException to be thrown, but nothing was thrown."
+      }
+    ]
+  },
+  "http-server-netty": {
+    "tests": 2556,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 22,
+    "failingCases": []
+  },
+  "http": {
+    "tests": 2485,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 26,
+    "failingCases": []
+  },
+  "http-server": {
+    "tests": 534,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 15,
+    "failingCases": []
+  },
+  "buffer-netty": {
+    "tests": 58,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "failingCases": []
+  }
+}

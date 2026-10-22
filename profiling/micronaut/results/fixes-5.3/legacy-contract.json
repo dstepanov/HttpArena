@@ -1,0 +1,30 @@
+[
+  {
+    "build": "released-5.1.0",
+    "query_cases": 9,
+    "fixture_items": 50,
+    "full_shape_and_total": true,
+    "gzip": true
+  },
+  {
+    "build": "released-5.1.0-missing-dataset",
+    "query_cases": 9,
+    "fixture_items": 0,
+    "full_shape_and_total": true,
+    "gzip": false
+  },
+  {
+    "build": "core-5.3.0-SNAPSHOT",
+    "query_cases": 9,
+    "fixture_items": 50,
+    "full_shape_and_total": true,
+    "gzip": true
+  },
+  {
+    "build": "core-5.3.0-SNAPSHOT-missing-dataset",
+    "query_cases": 9,
+    "fixture_items": 0,
+    "full_shape_and_total": true,
+    "gzip": false
+  }
+]

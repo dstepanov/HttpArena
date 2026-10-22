@@ -1,0 +1,369 @@
+From a3ca50ca5c0201dec7cd4a396b53fa9d3dc713c9 Mon Sep 17 00:00:00 2001
+From: Denis Stepanov <denis.stepanov+github@gmail.com>
+Date: Thu, 22 Oct 2026 14:08:10 +0200
+Subject: [PATCH] Avoid boxing primitive siblings in customized serializers
+
+---
+ .../serde/UnwrappedItemBenchmark.java         | 100 ++++++++++
+ .../annotation/UnwrappedPrimitiveSpec.groovy  | 181 ++++++++++++++++++
+ .../CustomizedObjectSerializer.java           |  31 +++
+ 3 files changed, 312 insertions(+)
+ create mode 100644 benchmarks/src/jmh/java/io/micronaut/serde/UnwrappedItemBenchmark.java
+ create mode 100644 serde-jackson/src/test/groovy/io/micronaut/serde/jackson/annotation/UnwrappedPrimitiveSpec.groovy
+
+diff --git a/benchmarks/src/jmh/java/io/micronaut/serde/UnwrappedItemBenchmark.java b/benchmarks/src/jmh/java/io/micronaut/serde/UnwrappedItemBenchmark.java
+new file mode 100644
+index 000000000..ce15bdd1f
+--- /dev/null
++++ b/benchmarks/src/jmh/java/io/micronaut/serde/UnwrappedItemBenchmark.java
+@@ -0,0 +1,100 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package io.micronaut.serde;
++
++import com.fasterxml.jackson.annotation.JsonUnwrapped;
++import io.micronaut.context.ApplicationContext;
++import io.micronaut.core.type.Argument;
++import io.micronaut.serde.annotation.Serdeable;
++import io.micronaut.serde.jackson.JacksonJsonMapper;
++import org.openjdk.jmh.annotations.Benchmark;
++import org.openjdk.jmh.annotations.BenchmarkMode;
++import org.openjdk.jmh.annotations.Mode;
++import org.openjdk.jmh.annotations.Scope;
++import org.openjdk.jmh.annotations.Setup;
++import org.openjdk.jmh.annotations.State;
++import org.openjdk.jmh.annotations.TearDown;
++
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++import java.util.Map;
++
++/** Compares equivalent flat and unwrapped response shapes with Micronaut Serialization. */
++@State(Scope.Thread)
++@BenchmarkMode(Mode.Throughput)
++public class UnwrappedItemBenchmark {
++    private static final Argument<List<FlatItem>> FLAT = Argument.listOf(FlatItem.class);
++    private static final Argument<List<PricedItem>> UNWRAPPED = Argument.listOf(PricedItem.class);
++
++    private ApplicationContext context;
++    private JacksonJsonMapper mapper;
++    private List<FlatItem> flat;
++    private List<PricedItem> unwrapped;
++
++    @Setup
++    public void setup() throws IOException {
++        context = ApplicationContext.run(Map.of("micronaut.serde.serialization.inclusion", "ALWAYS"));
++        mapper = context.getBean(JacksonJsonMapper.class);
++        flat = new ArrayList<>(50);
++        unwrapped = new ArrayList<>(50);
++        for (int i = 0; i < 50; i++) {
++            Item item = new Item(i + 1000L, "Product " + i, "office", i + 500L, i + 200L,
++                true, List.of("sale", "featured"), new Rating(4.5, 1000));
++            long total = item.price * item.quantity;
++            flat.add(new FlatItem(item.id, item.name, item.category, item.price, item.quantity,
++                item.active, item.tags, item.rating, total));
++            unwrapped.add(new PricedItem(item, total));
++        }
++        if (!Arrays.equals(mapper.writeValueAsBytes(FLAT, flat), mapper.writeValueAsBytes(UNWRAPPED, unwrapped))) {
++            throw new IllegalStateException("Flat and unwrapped response JSON differs");
++        }
++    }
++
++    @Benchmark
++    public byte[] flat() throws IOException {
++        return mapper.writeValueAsBytes(FLAT, flat);
++    }
++
++    @Benchmark
++    public byte[] unwrapped() throws IOException {
++        return mapper.writeValueAsBytes(UNWRAPPED, unwrapped);
++    }
++
++    @TearDown
++    public void close() {
++        context.close();
++    }
++
++    @Serdeable
++    public record Rating(double score, long votes) {
++    }
++
++    @Serdeable
++    public record Item(long id, String name, String category, long price, long quantity,
++                       boolean active, List<String> tags, Rating rating) {
++    }
++
++    @Serdeable
++    public record PricedItem(@JsonUnwrapped Item item, long total) {
++    }
++
++    @Serdeable
++    public record FlatItem(long id, String name, String category, long price, long quantity,
++                           boolean active, List<String> tags, Rating rating, long total) {
++    }
++}
+diff --git a/serde-jackson/src/test/groovy/io/micronaut/serde/jackson/annotation/UnwrappedPrimitiveSpec.groovy b/serde-jackson/src/test/groovy/io/micronaut/serde/jackson/annotation/UnwrappedPrimitiveSpec.groovy
+new file mode 100644
+index 000000000..13e61badd
+--- /dev/null
++++ b/serde-jackson/src/test/groovy/io/micronaut/serde/jackson/annotation/UnwrappedPrimitiveSpec.groovy
+@@ -0,0 +1,181 @@
++/*
++ * Copyright 2017-2026 original authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package io.micronaut.serde.jackson.annotation
++
++import io.micronaut.serde.exceptions.SerdeException
++import io.micronaut.serde.jackson.JsonCompileSpec
++
++class UnwrappedPrimitiveSpec extends JsonCompileSpec {
++
++    void 'unwrapped beans serialize primitive siblings without changing their scalar kinds'() {
++        given:
++        def context = buildContext('example.Parent', '''
++package example;
++
++import com.fasterxml.jackson.annotation.*;
++import io.micronaut.serde.annotation.Serdeable;
++
++@Serdeable
++@JsonInclude(JsonInclude.Include.ALWAYS)
++record Parent(boolean a, byte b, short c, char d, int e, long f, float g, double h,
++              @JsonUnwrapped Name name) {}
++@Serdeable
++record Name(String value) {}
++''')
++        def name = newInstance(context, 'example.Name', 'nested')
++        def parent = newInstance(context, 'example.Parent', true, (byte) 2, (short) 300, (char) 'x',
++            1000, 100000L, 1.25f, 2.5d, name)
++
++        expect:
++        serializeToString(jsonMapper, parent) ==
++            '{"a":true,"b":2,"c":300,"d":120,"e":1000,"f":100000,"g":1.25,"h":2.5,"value":"nested"}'
++
++        cleanup:
++        context.close()
++    }
++
++    void 'unwrapped properties retain position, prefix, null handling and formatted primitive siblings'() {
++        given:
++        def context = buildContext('example.Parent', '''
++package example;
++
++import com.fasterxml.jackson.annotation.*;
++import io.micronaut.serde.annotation.Serdeable;
++
++@Serdeable
++@JsonInclude(JsonInclude.Include.ALWAYS)
++record Parent(long first, @JsonUnwrapped(prefix = "n_", suffix = "_x") Name name,
++              @JsonFormat(shape = JsonFormat.Shape.STRING) long last) {}
++@Serdeable
++record Name(String value, int count) {}
++''')
++        def name = newInstance(context, 'example.Name', 'Snow ☃', 300)
++
++        expect:
++        serializeToString(jsonMapper, newInstance(context, 'example.Parent', 1000L, name, 2000L)) ==
++            '{"first":1000,"n_value_x":"Snow ☃","n_count_x":300,"last":"2000"}'
++        serializeToString(jsonMapper, newInstance(context, 'example.Parent', 1000L, null, 2000L)) ==
++            '{"first":1000,"last":"2000"}'
++
++        cleanup:
++        context.close()
++    }
++
++    void 'unwrapped primitive siblings retain inclusion and views'() {
++        given:
++        def context = buildContext('example.Parent', '''
++package example;
++
++import com.fasterxml.jackson.annotation.*;
++import io.micronaut.serde.annotation.Serdeable;
++
++class PublicView {}
++class PrivateView extends PublicView {}
++@Serdeable
++@JsonInclude(JsonInclude.Include.ALWAYS)
++record Parent(@JsonUnwrapped Name name,
++              @JsonInclude(JsonInclude.Include.NON_DEFAULT) long omitted,
++              @JsonView(PublicView.class) long shown,
++              @JsonView(PrivateView.class) long secret) {}
++@Serdeable
++record Name(String value) {}
++''')
++        def name = newInstance(context, 'example.Name', 'value')
++        def parent = newInstance(context, 'example.Parent', name, 0L, 1000L, 2000L)
++
++        expect:
++        serializeToString(jsonMapper, parent, context.classLoader.loadClass('example.PublicView')) ==
++            '{"value":"value","shown":1000}'
++        serializeToString(jsonMapper, parent, context.classLoader.loadClass('example.PrivateView')) ==
++            '{"value":"value","shown":1000,"secret":2000}'
++
++        cleanup:
++        context.close()
++    }
++
++    void 'nested unwrapped getters retain their error paths'() {
++        given:
++        def context = buildContext('example.Outer', '''
++package example;
++
++import com.fasterxml.jackson.annotation.JsonUnwrapped;
++import com.fasterxml.jackson.annotation.JsonInclude;
++import io.micronaut.serde.annotation.Serdeable;
++
++@Serdeable
++@JsonInclude(JsonInclude.Include.ALWAYS)
++record Outer(@JsonUnwrapped Inner inner) {}
++@Serdeable
++@JsonInclude(JsonInclude.Include.ALWAYS)
++class Inner {
++    @JsonUnwrapped
++    public Name getName() { throw new IllegalStateException("broken getter"); }
++}
++@Serdeable
++record Name(String value) {}
++''')
++        def inner = newInstance(context, 'example.Inner', [] as Object[])
++        def outer = newInstance(context, 'example.Outer', inner)
++
++        when:
++        serializeToString(jsonMapper, outer)
++
++        then:
++        def error = thrown(SerdeException)
++        error.message.endsWith('broken getter')
++        error.pathAsString == 'example.Outer["inner"]->example.Inner["name"]'
++
++        cleanup:
++        context.close()
++    }
++
++    void 'property filters can still omit primitive siblings with always inclusion'() {
++        given:
++        def context = buildContext('example.Parent', '''
++package example;
++
++import com.fasterxml.jackson.annotation.*;
++import io.micronaut.serde.annotation.Serdeable;
++import io.micronaut.serde.PropertyFilter;
++import io.micronaut.serde.Serializer;
++import jakarta.inject.Named;
++import jakarta.inject.Singleton;
++
++@Serdeable
++@JsonFilter("hide-total")
++@JsonInclude(JsonInclude.Include.ALWAYS)
++record Parent(@JsonUnwrapped Name name, long total) {}
++@Serdeable
++record Name(String value) {}
++@Singleton
++@Named("hide-total")
++class HideTotal implements PropertyFilter {
++    public boolean shouldInclude(Serializer.EncoderContext context, Serializer<Object> serializer,
++                                 Object bean, String name, Object value) {
++        return !name.equals("total");
++    }
++}
++''')
++        def name = newInstance(context, 'example.Name', 'nested')
++        def parent = newInstance(context, 'example.Parent', name, 100000L)
++
++        expect:
++        serializeToString(jsonMapper, parent) == '{"value":"nested"}'
++
++        cleanup:
++        context.close()
++    }
++}
+diff --git a/serde-support/src/main/java/io/micronaut/serde/support/serializers/CustomizedObjectSerializer.java b/serde-support/src/main/java/io/micronaut/serde/support/serializers/CustomizedObjectSerializer.java
+index aae2d3348..8d973bf79 100644
+--- a/serde-support/src/main/java/io/micronaut/serde/support/serializers/CustomizedObjectSerializer.java
++++ b/serde-support/src/main/java/io/micronaut/serde/support/serializers/CustomizedObjectSerializer.java
+@@ -28,6 +28,7 @@ import io.micronaut.serde.config.annotation.SerdeConfig;
+ import io.micronaut.serde.exceptions.SerdeException;
+ import io.micronaut.serde.reference.PropertyReference;
+ import io.micronaut.serde.reference.SerializationReference;
++import io.micronaut.serde.support.util.DecoderValueKind;
+ 
+ import java.io.IOException;
+ import java.util.List;
+@@ -52,10 +53,34 @@ import java.util.Objects;
+ final class CustomizedObjectSerializer<T> implements ObjectSerializer<T> {
+     private final SerBean<T> serBean;
+     private final Keys keys;
++    private final byte[] primitiveValueKinds;
+ 
+     CustomizedObjectSerializer(SerBean<T> serBean) {
+         this.serBean = serBean;
+         this.keys = serBean.propertyKeys;
++        this.primitiveValueKinds = new byte[serBean.writeProperties.size()];
++        // Keep primitive access direct when another property requires customization.
++        if (serBean.propertyFilter == null) {
++            for (int i = 0; i < primitiveValueKinds.length; i++) {
++                SerBean.SerProperty<T, Object> property = serBean.writeProperties.get(i);
++                if (property.primitive
++                    && property instanceof SerBean.PropSerProperty<?, ?>
++                    && !property.serializableInto
++                    && property.include == SerdeConfig.SerInclude.ALWAYS
++                    && property.views == null
++                    && property.backRef == null
++                    && property.managedRef == null
++                    && property.format == null
++                    && property.featuresWith.isEmpty()
++                    && property.featuresWithout.isEmpty()
++                    && property.serializer instanceof DecoderValueKind.Provider provider) {
++                    byte kind = provider.decoderValueKind().code();
++                    if (kind >= DecoderValueKind.BOOLEAN_CODE && kind <= DecoderValueKind.CHAR_CODE) {
++                        primitiveValueKinds[i] = kind;
++                    }
++                }
++            }
++        }
+     }
+ 
+     @Override
+@@ -72,6 +97,12 @@ final class CustomizedObjectSerializer<T> implements ObjectSerializer<T> {
+         for (SerBean.SerProperty<T, Object> property : serBean.writeProperties) {
+             int keyIndex = propertyIndex++;
+             try {
++                byte primitiveValueKind = primitiveValueKinds[keyIndex];
++                if (primitiveValueKind != DecoderValueKind.NONE_CODE) {
++                    keysAwareEncoder.encodeKey(keys, keyIndex);
++                    property.serializeDirectPrimitive(keysAwareEncoder, value, primitiveValueKind);
++                    continue;
++                }
+                 final Object propertyValue = property.get(value);
+                 final Serializer<Object> serializer = Objects.requireNonNull(property.serializer);
+                 final String backRef = property.backRef;
+-- 
+2.55.0
+

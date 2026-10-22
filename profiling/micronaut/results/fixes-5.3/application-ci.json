@@ -1,0 +1,22 @@
+{
+  "run": "https://github.com/MDA2AV/HttpArena/actions/runs/39784832942",
+  "commit": "f000cc0ccc02da0957e958f7d9990743afe44bfe",
+  "conclusion": "success",
+  "entries": {
+    "micronaut": {
+      "passed": 57,
+      "failed": 0
+    },
+    "micronaut-tuned": {
+      "passed": 111,
+      "failed": 0,
+      "skipped": 1
+    },
+    "micronaut-production": {
+      "passed": 111,
+      "failed": 0,
+      "skipped": 1
+    }
+  },
+  "h3_skip": "CI h2load-h3 image absent; local final exact-body QUIC validation passes"
+}
